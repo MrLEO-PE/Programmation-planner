@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v5-all-writes-audited -->
+<!-- BUILD: v6-diagnostics -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
@@ -1100,6 +1100,42 @@ function renderSettings(){
     <button class="btn secondary" onclick="logout()">Log out</button>
   </div>`);
   m.appendChild(acc);
+
+  const debugPanel = el(`<div class="panel"><h3>Diagnostics</h3>
+    <button class="btn secondary small" onclick="runDiagnostics()">Run diagnostic check</button>
+    <pre id="diagOutput" class="mono" style="white-space:pre-wrap;font-size:12px;margin-top:12px;background:var(--paper);padding:10px;border-radius:6px;border:1px solid var(--line);display:none;"></pre>
+  </div>`);
+  m.appendChild(debugPanel);
+}
+async function runDiagnostics(){
+  const out = document.getElementById('diagOutput');
+  out.style.display='block';
+  out.textContent = 'Running…';
+  const lines = [];
+  lines.push('Logged in as: ' + STATE.session.user.email);
+  lines.push('Logged in user id: ' + STATE.session.user.id);
+  lines.push('');
+  lines.push('Current school id (in app memory): ' + STATE.currentSchoolId);
+  lines.push('Current school name (in app memory): ' + (STATE.school ? STATE.school.name : 'null'));
+  lines.push('');
+  lines.push('Schools in app memory (' + STATE.schools.length + '):');
+  STATE.schools.forEach(s=> lines.push('  - ' + s.id + '  "' + s.name + '"  owner=' + s.owner_id));
+  lines.push('');
+  lines.push('Classes in app memory (' + STATE.classes.length + '):');
+  STATE.classes.forEach(c=> lines.push('  - ' + c.id + '  "' + c.name + '"  school_id=' + c.school_id));
+  lines.push('');
+  lines.push('--- Now querying Supabase directly (bypassing app memory) ---');
+  const {data: liveSchools, error: schoolErr} = await sb.from('schools').select('*');
+  lines.push('');
+  lines.push('Live schools query error: ' + (schoolErr ? schoolErr.message : 'none'));
+  lines.push('Live schools returned (' + (liveSchools?liveSchools.length:0) + '):');
+  (liveSchools||[]).forEach(s=> lines.push('  - ' + s.id + '  "' + s.name + '"  owner=' + s.owner_id));
+  const {data: liveClasses, error: classErr} = await sb.from('classes').select('*');
+  lines.push('');
+  lines.push('Live classes query error: ' + (classErr ? classErr.message : 'none'));
+  lines.push('Live classes returned (' + (liveClasses?liveClasses.length:0) + '):');
+  (liveClasses||[]).forEach(c=> lines.push('  - ' + c.id + '  "' + c.name + '"  school_id=' + c.school_id));
+  out.textContent = lines.join('\n');
 }
 async function saveSchoolName(){
   const name = document.getElementById('schoolNameInput').value.trim();
