@@ -194,6 +194,7 @@ tr:last-child td{border-bottom:none;}
 const SUPABASE_URL = "https://mihsgxvwddjfmwxyfzia.supabase.co";
 const SUPABASE_ANON_KEY = "sb_publishable_M7zTAWdwjuk-FV9N2hbM_g_0VJOUUmY";
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const SITE_URL = "https://mrleo-pe.github.io/Programmation-planner/";
 
 const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
 
@@ -233,13 +234,13 @@ async function handleAuthSubmit(e){
       const {error} = await sb.auth.signInWithPassword({email, password});
       if(error) throw error;
     } else if(authTab==='signup'){
-      const {error} = await sb.auth.signUp({email, password});
+      const {error} = await sb.auth.signUp({email, password, options:{emailRedirectTo: SITE_URL}});
       if(error) throw error;
       msg.className='ok';
       msg.textContent='Account created. Check your inbox to confirm, then log in.';
       return;
     } else {
-      const {error} = await sb.auth.resetPasswordForEmail(email);
+      const {error} = await sb.auth.resetPasswordForEmail(email, {redirectTo: SITE_URL});
       if(error) throw error;
       msg.className='ok';
       msg.textContent='Password reset email sent.';
