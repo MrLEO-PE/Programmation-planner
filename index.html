@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v6-diagnostics -->
+<!-- BUILD: v7-classes-visible-fix -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <style>
@@ -409,16 +409,24 @@ async function loadAll(){
     sb.from('year_group_sports').select('*').eq('school_id', sid),
     sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
   ]);
-  STATE.yearGroups = yg.data || [];
-  STATE.classes = cls.data || [];
-  STATE.sessions = sess.data || [];
-  STATE.sports = sports.data || [];
-  STATE.facilities = fac.data || [];
-  STATE.sportFacilities = sf.data || [];
-  STATE.periods = per.data || [];
-  STATE.unavailable = unav.data || [];
-  STATE.ygSports = ygs.data || [];
-  STATE.entries = entries.data || [];
+  const results = {year_groups:yg, classes:cls, pe_sessions:sess, sports:sports, facilities:fac, sport_facilities:sf, periods:per, unavailable_dates:unav, year_group_sports:ygs, programme_entries:entries};
+  const failed = Object.entries(results).filter(([k,v])=>v.error);
+  if(failed.length){
+    console.error('loadAll: some queries failed', failed);
+    alert('Could not load some data from Supabase:\n' + failed.map(([k,v])=>`${k}: ${v.error.message}`).join('\n') + '\n\nShowing whatever loaded successfully; anything that failed keeps its previous value instead of being cleared.');
+  }
+  // Only overwrite state for queries that actually succeeded — a failed
+  // query must never silently wipe out data that was already loaded.
+  if(!yg.error) STATE.yearGroups = yg.data || [];
+  if(!cls.error) STATE.classes = cls.data || [];
+  if(!sess.error) STATE.sessions = sess.data || [];
+  if(!sports.error) STATE.sports = sports.data || [];
+  if(!fac.error) STATE.facilities = fac.data || [];
+  if(!sf.error) STATE.sportFacilities = sf.data || [];
+  if(!per.error) STATE.periods = per.data || [];
+  if(!unav.error) STATE.unavailable = unav.data || [];
+  if(!ygs.error) STATE.ygSports = ygs.data || [];
+  if(!entries.error) STATE.entries = entries.data || [];
   renderSchoolSwitcher();
 }
 
@@ -471,8 +479,17 @@ function render(){
     export: renderExport,
     settings: renderSettings,
   };
-  document.getElementById('main').innerHTML = '';
-  (map[currentPage] || renderDashboard)();
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+  try{
+    (map[currentPage] || renderDashboard)();
+  }catch(err){
+    console.error('render() failed on page', currentPage, err);
+    main.innerHTML = '';
+    main.appendChild(el(`<div class="conflict-box"><b>This page hit an error while rendering</b>
+      Page: ${esc(currentPage)}<br>Error: ${esc(err.message)}<br><br>
+      Your data is safe in the database — this is just a display bug. Please share this exact message.</div>`));
+  }
 }
 
 function head(eyebrow,title,sub){
@@ -542,7 +559,7 @@ function renderDashboard(){
    --------------------------------------------------------- */
 function renderClasses(){
   const m = document.getElementById('main');
-  m.appendChild(el(head('01 · Structure','Classes &amp; timetable',"Create year groups, classes, and each class's weekly PE sessions.")));
+  m.appendChild(el(head('01 · Structure','Classes &amp; timetable',`Create year groups, classes, and each class's weekly PE sessions. (${STATE.classes.length} class${STATE.classes.length===1?'':'es'} loaded for this school)`)));
 
   // Year groups panel
   const ygPanel = el(`<div class="panel"><h3>Year groups</h3>
