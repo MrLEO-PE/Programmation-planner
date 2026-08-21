@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v17-full-import-undo -->
+<!-- BUILD: v18-delete-all-classes -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1001,7 +1001,10 @@ function renderClasses(){
 
   // Classes panel
   const ygOptions = STATE.yearGroups.map(yg=>`<option value="${yg.id}">${esc(yg.name)}</option>`).join('');
-  const clsPanel = el(`<div class="panel"><h3>Classes</h3>
+  const clsPanel = el(`<div class="panel"><h3 style="display:flex;justify-content:space-between;align-items:center;">
+      <span>Classes</span>
+      ${STATE.classes.length? `<button class="btn small danger" onclick="deleteAllClasses()">Delete all classes</button>` : ''}
+    </h3>
     <div class="row" style="margin-bottom:12px;">
       <div class="field"><label>Class name</label><input type="text" id="newClassName" placeholder="e.g. 5A"></div>
       <div class="field"><label>Year group</label><select id="newClassYG"><option value="">— none —</option>${ygOptions}</select></div>
@@ -1044,6 +1047,14 @@ async function addClass(){
   const ygId = document.getElementById('newClassYG').value || null;
   if(!name) return;
   if(!await dbWrite(sb.from('classes').insert({school_id: STATE.currentSchoolId, name, year_group_id: ygId}), 'add class')) return;
+  await loadAll(); render();
+}
+async function deleteAllClasses(){
+  const count = STATE.classes.length;
+  if(count===0) return;
+  const typed = prompt(`This deletes all ${count} classes for this school, along with every one of their weekly sessions and any generated programme entries tied to them. Year groups, sports, and facilities are NOT touched.\n\nThis cannot be undone. Type DELETE to confirm.`);
+  if(typed!=='DELETE') return;
+  if(!await dbWrite(sb.from('classes').delete().eq('school_id', STATE.currentSchoolId), 'delete all classes')) return;
   await loadAll(); render();
 }
 async function addSession(classId){
