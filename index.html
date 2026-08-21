@@ -3,9 +3,10 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v8-table-row-fix -->
+<!-- BUILD: v11-excel-import -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <style>
 :root{
   --ink:#1c2321;
@@ -173,6 +174,7 @@ tr:last-child td{border-bottom:none;}
     <div id="schoolSwitcher" style="margin-bottom:14px;"></div>
     <button class="navbtn active" data-page="dashboard" onclick="goPage('dashboard')"><span class="num">00</span>Dashboard</button>
     <button class="navbtn" data-page="classes" onclick="goPage('classes')"><span class="num">01</span>Classes &amp; timetable</button>
+    <button class="navbtn" data-page="import" onclick="goPage('import')"><span class="num">01b</span>Import from Excel</button>
     <button class="navbtn" data-page="sports" onclick="goPage('sports')"><span class="num">02</span>Sports</button>
     <button class="navbtn" data-page="facilities" onclick="goPage('facilities')"><span class="num">03</span>Facilities</button>
     <button class="navbtn" data-page="periods" onclick="goPage('periods')"><span class="num">04</span>Periods &amp; dates</button>
@@ -398,13 +400,13 @@ async function loadAll(){
     return;
   }
   const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries] = await Promise.all([
-    sb.from('year_groups').select('*').eq('school_id', sid).order('name'),
-    sb.from('classes').select('*').eq('school_id', sid).order('name'),
+    sb.from('year_groups').select('*').eq('school_id', sid),
+    sb.from('classes').select('*').eq('school_id', sid),
     sb.from('pe_sessions').select('*').eq('school_id', sid),
-    sb.from('sports').select('*').eq('school_id', sid).order('name'),
-    sb.from('facilities').select('*').eq('school_id', sid).order('name'),
+    sb.from('sports').select('*').eq('school_id', sid),
+    sb.from('facilities').select('*').eq('school_id', sid),
     sb.from('sport_facilities').select('*').eq('school_id', sid),
-    sb.from('periods').select('*').eq('school_id', sid).order('start_date'),
+    sb.from('periods').select('*').eq('school_id', sid),
     sb.from('unavailable_dates').select('*').eq('school_id', sid).order('date'),
     sb.from('year_group_sports').select('*').eq('school_id', sid),
     sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
@@ -417,13 +419,13 @@ async function loadAll(){
   }
   // Only overwrite state for queries that actually succeeded — a failed
   // query must never silently wipe out data that was already loaded.
-  if(!yg.error) STATE.yearGroups = yg.data || [];
-  if(!cls.error) STATE.classes = cls.data || [];
+  if(!yg.error) STATE.yearGroups = naturalSortBy(yg.data||[], 'name');
+  if(!cls.error) STATE.classes = naturalSortBy(cls.data||[], 'name');
   if(!sess.error) STATE.sessions = sess.data || [];
-  if(!sports.error) STATE.sports = sports.data || [];
-  if(!fac.error) STATE.facilities = fac.data || [];
+  if(!sports.error) STATE.sports = naturalSortBy(sports.data||[], 'name');
+  if(!fac.error) STATE.facilities = naturalSortBy(fac.data||[], 'name');
   if(!sf.error) STATE.sportFacilities = sf.data || [];
-  if(!per.error) STATE.periods = per.data || [];
+  if(!per.error) STATE.periods = naturalSortBy(per.data||[], 'start_date');
   if(!unav.error) STATE.unavailable = unav.data || [];
   if(!ygs.error) STATE.ygSports = ygs.data || [];
   if(!entries.error) STATE.entries = entries.data || [];
@@ -470,6 +472,7 @@ function render(){
   const map = {
     dashboard: renderDashboard,
     classes: renderClasses,
+    import: renderImport,
     sports: renderSports,
     facilities: renderFacilities,
     periods: renderPeriods,
@@ -498,6 +501,12 @@ function head(eyebrow,title,sub){
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild || t.content.firstChild; }
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
+
+/* Natural sort so "Year 10" comes after "Year 9", not before "Year 7". */
+const naturalCollator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
+function naturalSortBy(arr, key){
+  return [...arr].sort((a,b)=>naturalCollator.compare(a[key]||'', b[key]||''));
+}
 
 /* Every write goes through this so failures are never silent again. */
 async function dbWrite(promise, label){
@@ -557,6 +566,288 @@ function renderDashboard(){
 /* ---------------------------------------------------------
    CLASSES & TIMETABLE
    --------------------------------------------------------- */
+/* ---------------------------------------------------------
+   IMPORT FROM EXCEL
+   --------------------------------------------------------- */
+let IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null };
+
+function renderImport(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('01b · Import','Import from Excel','Upload the PE staff timetable and review what was found before anything is saved.')));
+
+  const uploadPanel = el(`<div class="panel"><h3>1. Upload file</h3>
+    <input type="file" id="importFile" accept=".xlsx,.xls,.csv" onchange="handleImportFile(this)">
+    <p class="hint">Expected layout: a grid with days as column headers, a period/time column on the left, and each PE session written as class name on one line and teacher(s) on the next line within the same cell. Nothing is saved to your school until you review and click Import at the bottom.</p>
+  </div>`);
+  m.appendChild(uploadPanel);
+
+  if(IMPORT.workbook && IMPORT.workbook.SheetNames.length>1){
+    const sheetPanel = el(`<div class="panel"><h3>Sheet</h3>
+      <select id="importSheetSelect" onchange="switchImportSheet(this.value)">
+        ${IMPORT.workbook.SheetNames.map(n=>`<option value="${esc(n)}" ${n===IMPORT.sheetName?'selected':''}>${esc(n)}</option>`).join('')}
+      </select></div>`);
+    m.appendChild(sheetPanel);
+  }
+
+  if(IMPORT.parseInfo && IMPORT.parseInfo.error){
+    m.appendChild(el(`<div class="conflict-box"><b>Could not read this layout</b>${esc(IMPORT.parseInfo.error)}</div>`));
+    return;
+  }
+
+  if(!IMPORT.rows.length) return;
+
+  m.appendChild(el(`<div class="panel"><h3>2. Assign year groups</h3>
+    <p class="hint">One dropdown per class code found in the sheet. This applies to every session using that class name below.</p>
+    <div id="ygMapBox"></div></div>`));
+  const ygMapBox = document.getElementById('ygMapBox');
+  const ygOptionsHtml = STATE.yearGroups.map(yg=>`<option value="${yg.id}">${esc(yg.name)}</option>`).join('');
+  IMPORT.uniqueClasses.forEach(cname=>{
+    const guess = guessYearGroupId(cname);
+    ygMapBox.appendChild(el(`<div class="row" style="margin-bottom:8px;max-width:480px;">
+      <div style="flex:1 1 120px;"><b>${esc(cname)}</b></div>
+      <select id="ygmap_${cssSafe(cname)}" style="flex:2 1 200px;">
+        <option value="">— create/assign new —</option>
+        ${ygOptionsHtml}
+        <option value="__new__" ${!guess?'selected':''}>+ New year group from class code</option>
+      </select>
+    </div>`));
+    const sel = document.getElementById('ygmap_'+cssSafe(cname));
+    if(guess) sel.value = guess; else sel.value = '__new__';
+  });
+
+  const tblPanel = el(`<div class="panel"><h3>3. Review sessions (${IMPORT.rows.length} found)</h3>
+    <table><thead><tr><th></th><th>Day</th><th>Start</th><th>End</th><th>Class</th><th>Teacher</th></tr></thead><tbody id="importRowsBody"></tbody></table>
+    <button class="btn" style="margin-top:14px;" onclick="commitImport()">Import these sessions</button>
+  </div>`);
+  m.appendChild(tblPanel);
+  const tbody = tblPanel.querySelector('#importRowsBody');
+  IMPORT.rows.forEach((r,i)=>{
+    tbody.appendChild(el(`<tr>
+      <td><input type="checkbox" id="incl_${i}" checked></td>
+      <td>${DAYS[r.day].slice(0,3)}</td>
+      <td><input type="time" id="start_${i}" value="${r.start}" style="width:100px;"></td>
+      <td><input type="time" id="end_${i}" value="${r.end}" style="width:100px;"></td>
+      <td><input type="text" id="cls_${i}" value="${esc(r.className)}" style="width:110px;"></td>
+      <td><input type="text" id="tch_${i}" value="${esc(r.teacher)}" style="width:140px;"></td>
+    </tr>`));
+  });
+}
+
+function cssSafe(s){ return s.replace(/[^a-zA-Z0-9]/g,'_'); }
+
+function guessYearGroupId(className){
+  const m = className.match(/^Y?\s*(\d{1,2})/i);
+  if(!m) return null;
+  const num = m[1];
+  const match = STATE.yearGroups.find(yg=>yg.name.replace(/[^0-9]/g,'')===num);
+  return match ? match.id : null;
+}
+
+async function switchImportSheet(name){
+  IMPORT.sheetName = name;
+  parseCurrentSheet();
+  render();
+}
+
+function handleImportFile(input){
+  const file = input.files[0];
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = (e)=>{
+    try{
+      const data = new Uint8Array(e.target.result);
+      const wb = XLSX.read(data, {type:'array', cellText:true});
+      IMPORT.workbook = wb;
+      IMPORT.sheetName = wb.SheetNames[0];
+      parseCurrentSheet();
+    }catch(err){
+      IMPORT.parseInfo = {error: err.message};
+      IMPORT.rows = [];
+    }
+    render();
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+function parseCurrentSheet(){
+  try{
+    const sheet = IMPORT.workbook.Sheets[IMPORT.sheetName];
+    const result = parseTimetableSheet(sheet);
+    IMPORT.rows = result.rows;
+    IMPORT.uniqueClasses = [...new Set(result.rows.map(r=>r.className))].sort();
+    IMPORT.parseInfo = result;
+  }catch(err){
+    console.error('parseCurrentSheet failed:', err);
+    IMPORT.rows = [];
+    IMPORT.uniqueClasses = [];
+    IMPORT.parseInfo = {error: err.message};
+  }
+}
+
+const DAY_NAMES = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'];
+
+function parseTimetableSheet(sheet){
+  if(!sheet['!ref']) throw new Error('This sheet appears to be empty.');
+  const range = XLSX.utils.decode_range(sheet['!ref']);
+  const merges = sheet['!merges'] || [];
+
+  function cellAt(r,c){
+    const addr = XLSX.utils.encode_cell({r,c});
+    const cell = sheet[addr];
+    if(!cell) return '';
+    return (cell.w!==undefined ? cell.w : (cell.v!==undefined ? String(cell.v) : '')).toString();
+  }
+  function mergeAt(r,c){
+    return merges.find(m=>r>=m.s.r && r<=m.e.r && c>=m.s.c && c<=m.e.c) || null;
+  }
+  function isMergeTopLeft(m,r,c){ return m.s.r===r && m.s.c===c; }
+
+  // 1. find the header row containing day names
+  let headerRow = -1;
+  const dayCols = {};
+  for(let r=range.s.r; r<=range.e.r; r++){
+    const found = {};
+    for(let c=range.s.c; c<=range.e.c; c++){
+      const txt = cellAt(r,c).trim().toUpperCase();
+      const dayIdx = DAY_NAMES.indexOf(txt);
+      if(dayIdx>=0) found[dayIdx]=c;
+    }
+    if(Object.keys(found).length>=3){ headerRow=r; Object.assign(dayCols, found); break; }
+  }
+  if(headerRow===-1){
+    return {rows:[], error:'Could not find a header row containing day names (MONDAY, TUESDAY, ...). Make sure the sheet has weekday names as column headers.'};
+  }
+
+  // day column span (usually 2 columns per day via merge)
+  const daySpan = {};
+  Object.entries(dayCols).forEach(([dayIdx,col])=>{
+    const m = mergeAt(headerRow, col);
+    daySpan[dayIdx] = m ? (m.e.c - m.s.c + 1) : 1;
+  });
+
+  // 2. period/time columns: assume immediately left of the first day column
+  const firstDayCol = Math.min(...Object.values(dayCols));
+  const periodCol = Math.max(range.s.c, firstDayCol-2);
+  const timeCol = Math.max(range.s.c, firstDayCol-1);
+
+  const rows = [];
+  let currentTimeText = '';
+  for(let r=headerRow+1; r<=range.e.r; r++){
+    const timeTxt = cellAt(r,timeCol).trim();
+    if(timeTxt) currentTimeText = timeTxt;
+    const timeMatch = currentTimeText.match(/(\d{1,2})[:.h](\d{2})\s*[-–to]+\s*(\d{1,2})[:.h](\d{2})/i);
+    if(!timeMatch) continue; // no valid time range yet (e.g. above header, or break/lunch row with odd format)
+    const start = timeMatch[1].padStart(2,'0')+':'+timeMatch[2];
+    const end = timeMatch[3].padStart(2,'0')+':'+timeMatch[4];
+
+    Object.entries(dayCols).forEach(([dayIdxStr,col])=>{
+      const dayIdx = parseInt(dayIdxStr,10);
+      const span = daySpan[dayIdx];
+      if(span>=2){
+        const m = mergeAt(r, col);
+        if(m && isMergeTopLeft(m,r,col) && (m.e.c-m.s.c+1)>=2){
+          pushEntry(col);
+          return;
+        }
+      }
+      // otherwise treat each column in the day's span separately
+      for(let cc=col; cc<col+span; cc++){
+        const cm = mergeAt(r,cc);
+        if(cm && !isMergeTopLeft(cm,r,cc)) continue; // continuation of a merge, skip
+        pushEntryAt(cc);
+      }
+      function pushEntryAt(cc){
+        const txt = cellAt(r,cc);
+        if(!txt.trim()) return;
+        addRow(txt, dayIdx);
+      }
+      function pushEntry(cc){
+        const txt = cellAt(r,cc);
+        if(!txt.trim()) return;
+        addRow(txt, dayIdx);
+      }
+      function addRow(txt, dayIdx){
+        const lines = txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+        if(!lines.length) return;
+        const className = lines[0];
+        const teacher = lines.slice(1).join(', ');
+        rows.push({day: dayIdx, start, end, className, teacher});
+      }
+    });
+  }
+
+  return {rows, headerRow, periodCol, timeCol, dayCols};
+}
+
+async function commitImport(){
+  const ygSelections = {};
+  IMPORT.uniqueClasses.forEach(cname=>{
+    ygSelections[cname] = document.getElementById('ygmap_'+cssSafe(cname)).value;
+  });
+
+  // 1. create any needed year groups
+  const yearGroupIdFor = {};
+  for(const cname of IMPORT.uniqueClasses){
+    const sel = ygSelections[cname];
+    if(sel && sel!=='__new__'){
+      yearGroupIdFor[cname] = sel;
+    } else {
+      const m = cname.match(/^Y?\s*(\d{1,2})/i);
+      const label = m ? ('Year '+m[1]) : cname;
+      let existing = STATE.yearGroups.find(yg=>yg.name.toLowerCase()===label.toLowerCase());
+      if(!existing){
+        const {data, error} = await sb.from('year_groups').insert({school_id: STATE.currentSchoolId, name: label}).select().single();
+        if(error){ alert('Could not create year group "'+label+'": '+error.message); return; }
+        STATE.yearGroups.push(data);
+        existing = data;
+      }
+      yearGroupIdFor[cname] = existing.id;
+    }
+  }
+
+  // 2. create any needed classes
+  const classIdFor = {};
+  for(const cname of IMPORT.uniqueClasses){
+    let existing = STATE.classes.find(c=>c.name.toLowerCase()===cname.toLowerCase());
+    if(!existing){
+      const {data, error} = await sb.from('classes').insert({school_id: STATE.currentSchoolId, name: cname, year_group_id: yearGroupIdFor[cname]||null}).select().single();
+      if(error){ alert('Could not create class "'+cname+'": '+error.message); return; }
+      STATE.classes.push(data);
+      existing = data;
+    }
+    classIdFor[cname] = existing.id;
+  }
+
+  // 3. build session inserts, reading any edits made in the review table, skipping unchecked / exact duplicates
+  const toInsert = [];
+  let skippedDup = 0, skippedUnchecked = 0;
+  IMPORT.rows.forEach((r,i)=>{
+    const incl = document.getElementById('incl_'+i).checked;
+    if(!incl){ skippedUnchecked++; return; }
+    const start = document.getElementById('start_'+i).value;
+    const end = document.getElementById('end_'+i).value;
+    const className = document.getElementById('cls_'+i).value.trim();
+    const teacher = document.getElementById('tch_'+i).value.trim() || null;
+    const classId = classIdFor[className] || (STATE.classes.find(c=>c.name.toLowerCase()===className.toLowerCase())||{}).id;
+    if(!classId){ return; }
+    const dup = STATE.sessions.some(s=>s.class_id===classId && s.day_of_week===r.day && s.start_time.slice(0,5)===start && s.end_time.slice(0,5)===end);
+    if(dup){ skippedDup++; return; }
+    toInsert.push({school_id: STATE.currentSchoolId, class_id: classId, day_of_week: r.day, start_time:start, end_time:end, teacher});
+  });
+
+  if(toInsert.length){
+    if(!await dbWrite(sb.from('pe_sessions').insert(toInsert), 'import sessions')) return;
+  }
+
+  alert(`Import complete.\n${toInsert.length} sessions created.\n${skippedDup} skipped (already existed).\n${skippedUnchecked} skipped (unchecked).`);
+  IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null };
+  await loadAll();
+  goPage('classes');
+}
+
+/* ---------------------------------------------------------
+   CLASSES & TIMETABLE
+   --------------------------------------------------------- */
 function renderClasses(){
   const m = document.getElementById('main');
   m.appendChild(el(head('01 · Structure','Classes &amp; timetable',`Create year groups, classes, and each class's weekly PE sessions. (${STATE.classes.length} class${STATE.classes.length===1?'':'es'} loaded for this school)`)));
@@ -592,7 +883,7 @@ function renderClasses(){
   STATE.classes.forEach(c=>{
     const yg = byId(STATE.yearGroups, c.year_group_id);
     const sessions = STATE.sessions.filter(s=>s.class_id===c.id).sort((a,b)=>a.day_of_week-b.day_of_week || a.start_time.localeCompare(b.start_time));
-    const sessHtml = sessions.map(s=>`<span class="pill">${DAYS[s.day_of_week].slice(0,3)} ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)} <button onclick="deleteRow('pe_sessions','${s.id}')">✕</button></span>`).join('') || '<span class="hint">none</span>';
+    const sessHtml = sessions.map(s=>`<span class="pill">${DAYS[s.day_of_week].slice(0,3)} ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}${s.teacher?' · '+esc(s.teacher):''} <button onclick="deleteRow('pe_sessions','${s.id}')">✕</button></span>`).join('') || '<span class="hint">none</span>';
     clsBody.appendChild(el(`<tr>
       <td><b>${esc(c.name)}</b></td>
       <td>${yg?esc(yg.name):'<span class="hint">—</span>'}</td>
@@ -601,6 +892,7 @@ function renderClasses(){
           <select class="mono" id="day_${c.id}">${DAYS.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select>
           <input type="time" id="start_${c.id}" value="09:00">
           <input type="time" id="end_${c.id}" value="10:00">
+          <input type="text" id="teacher_${c.id}" placeholder="Teacher (optional)" style="max-width:140px;">
           <button class="btn small secondary" onclick="addSession('${c.id}')">+ Session</button>
         </div>
       </td>
@@ -626,8 +918,9 @@ async function addSession(classId){
   const day = parseInt(document.getElementById('day_'+classId).value,10);
   const start = document.getElementById('start_'+classId).value;
   const end = document.getElementById('end_'+classId).value;
+  const teacher = document.getElementById('teacher_'+classId).value.trim() || null;
   if(!start || !end || start>=end){ alert('End time must be after start time.'); return; }
-  if(!await dbWrite(sb.from('pe_sessions').insert({school_id: STATE.currentSchoolId, class_id: classId, day_of_week: day, start_time: start, end_time: end}), 'add session')) return;
+  if(!await dbWrite(sb.from('pe_sessions').insert({school_id: STATE.currentSchoolId, class_id: classId, day_of_week: day, start_time: start, end_time: end, teacher}), 'add session')) return;
   await loadAll(); render();
 }
 async function deleteRow(table, id){
@@ -1119,8 +1412,11 @@ function renderSettings(){
   m.appendChild(acc);
 
   const debugPanel = el(`<div class="panel"><h3>Diagnostics</h3>
-    <button class="btn secondary small" onclick="runDiagnostics()">Run diagnostic check</button>
-    <pre id="diagOutput" class="mono" style="white-space:pre-wrap;font-size:12px;margin-top:12px;background:var(--paper);padding:10px;border-radius:6px;border:1px solid var(--line);display:none;"></pre>
+    <div class="row">
+      <button class="btn secondary small" onclick="runDiagnostics()">Run diagnostic check</button>
+      <button class="btn secondary small" onclick="captureFacilitiesDom()">Capture live Facilities table HTML</button>
+    </div>
+    <pre id="diagOutput" class="mono" style="white-space:pre-wrap;font-size:12px;margin-top:12px;background:var(--paper);padding:10px;border-radius:6px;border:1px solid var(--line);display:none;word-break:break-all;"></pre>
   </div>`);
   m.appendChild(debugPanel);
 }
@@ -1152,6 +1448,31 @@ async function runDiagnostics(){
   lines.push('Live classes query error: ' + (classErr ? classErr.message : 'none'));
   lines.push('Live classes returned (' + (liveClasses?liveClasses.length:0) + '):');
   (liveClasses||[]).forEach(c=> lines.push('  - ' + c.id + '  "' + c.name + '"  school_id=' + c.school_id));
+  lines.push('');
+  lines.push('--- Live rendered DOM check ---');
+  lines.push('navigator.userAgent: ' + navigator.userAgent);
+  const testRow = el(`<tr><td>DOM-TEST-CELL-1</td><td>DOM-TEST-CELL-2</td></tr>`);
+  lines.push('el() test — tagName: ' + (testRow ? testRow.tagName : 'NULL') + ', outerHTML: ' + (testRow ? testRow.outerHTML : 'N/A'));
+  out.textContent = lines.join('\n');
+}
+async function captureFacilitiesDom(){
+  const out = document.getElementById('diagOutput');
+  out.style.display='block';
+  out.style.whiteSpace = 'pre-wrap';
+  const lines = [];
+  lines.push('Building the Facilities table in a hidden test container (not navigating away)...');
+  lines.push('');
+  const testTbody = el(`<tbody></tbody>`);
+  STATE.facilities.forEach(f=>{
+    const usedBy = STATE.sportFacilities.filter(l=>l.facility_id===f.id).map(l=>byId(STATE.sports,l.sport_id)?.name).filter(Boolean);
+    testTbody.appendChild(el(`<tr><td><b>${esc(f.name)}</b></td><td>${usedBy.length?esc(usedBy.join(', ')):'<span class="hint">not linked yet</span>'}</td>
+      <td><button class="btn small danger" onclick="deleteRow('facilities','${f.id}')">Delete</button></td></tr>`));
+  });
+  lines.push('childElementCount: ' + testTbody.childElementCount);
+  lines.push('children tags: ' + Array.from(testTbody.children).map(c=>c.tagName).join(', '));
+  lines.push('');
+  lines.push('--- Raw outerHTML ---');
+  lines.push(testTbody.outerHTML);
   out.textContent = lines.join('\n');
 }
 async function saveSchoolName(){
