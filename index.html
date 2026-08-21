@@ -1,0 +1,936 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PE Programme Planner</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<style>
+:root{
+  --ink:#1c2321;
+  --paper:#f6f5f0;
+  --panel:#ffffff;
+  --line:#dcdad0;
+  --court:#2f6d5e;       /* deep court green — signature colour */
+  --court-dim:#e6efec;
+  --clay:#c76a3e;        /* whistle-orange accent */
+  --clay-dim:#f6e3d8;
+  --gold:#c9a13b;
+  --danger:#b3432f;
+  --danger-dim:#fbe4de;
+  --muted:#6c7570;
+  --radius:10px;
+  font-family: "Iowan Old Style","Palatino Linotype",Georgia,serif;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;background:var(--paper);color:var(--ink);}
+body{font-family:"Charter","Iowan Old Style",Georgia,serif;-webkit-font-smoothing:antialiased;}
+.mono{font-family:"IBM Plex Mono","SF Mono",Menlo,monospace;}
+h1,h2,h3{font-family:"Iowan Old Style","Palatino Linotype",Georgia,serif;letter-spacing:.2px;margin:0;}
+a{color:inherit;}
+button{font-family:inherit;cursor:pointer;}
+input,select,textarea{font-family:"IBM Plex Mono",Menlo,monospace;font-size:13.5px;}
+
+/* ---------- layout shell ---------- */
+#app{display:none;min-height:100vh;grid-template-columns:220px 1fr;}
+#app.ready{display:grid;}
+.sidebar{background:var(--ink);color:#eae7dd;padding:22px 16px;display:flex;flex-direction:column;gap:4px;}
+.brand{display:flex;align-items:center;gap:10px;margin-bottom:22px;padding:0 6px;}
+.brand .mark{width:30px;height:30px;border-radius:50%;background:var(--court);position:relative;flex:none;}
+.brand .mark::after{content:"";position:absolute;inset:6px;border:2px solid #eae7dd;border-radius:50%;}
+.brand .name{font-size:15px;line-height:1.15;}
+.brand .name b{display:block;font-size:16px;}
+.brand .name span{font-size:11px;color:#9a998f;font-family:"IBM Plex Mono",monospace;letter-spacing:.5px;}
+.navbtn{display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:8px;border:none;background:transparent;color:#cfccc0;text-align:left;font-size:14px;}
+.navbtn:hover{background:#2a3330;color:#fff;}
+.navbtn.active{background:var(--court);color:#fff;}
+.navbtn .num{font-family:"IBM Plex Mono",monospace;font-size:10.5px;color:#8f9c96;width:16px;}
+.navbtn.active .num{color:#d8ede7;}
+.sidebar-foot{margin-top:auto;padding:10px 6px 0;border-top:1px solid #33403c;font-size:12px;color:#9a998f;}
+.sidebar-foot button{background:none;border:none;color:#cfccc0;text-decoration:underline;padding:0;font-size:12px;margin-top:6px;}
+
+.main{padding:28px 34px 60px;overflow-x:auto;}
+.pagehead{display:flex;justify-content:space-between;align-items:flex-end;margin-bottom:20px;flex-wrap:wrap;gap:10px;}
+.pagehead h2{font-size:24px;}
+.pagehead .eyebrow{font-family:"IBM Plex Mono",monospace;font-size:11px;letter-spacing:1.5px;text-transform:uppercase;color:var(--court);margin-bottom:2px;}
+.pagehead p.sub{color:var(--muted);font-size:13.5px;margin-top:4px;max-width:60ch;}
+
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:18px 20px;margin-bottom:18px;}
+.panel h3{font-size:14px;text-transform:uppercase;letter-spacing:.8px;font-family:"IBM Plex Mono",monospace;color:var(--muted);margin-bottom:14px;font-weight:600;}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center;}
+.row > *{flex:1 1 160px;}
+.field{display:flex;flex-direction:column;gap:4px;}
+.field label{font-size:11px;color:var(--muted);font-family:"IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.4px;}
+input[type=text],input[type=date],input[type=time],input[type=email],input[type=password],select,textarea{
+  padding:8px 10px;border:1px solid var(--line);border-radius:7px;background:var(--paper);color:var(--ink);
+}
+input:focus,select:focus,textarea:focus{outline:2px solid var(--court);outline-offset:0;border-color:var(--court);}
+.btn{padding:8px 16px;border-radius:7px;border:1px solid var(--ink);background:var(--ink);color:#fff;font-size:13.5px;white-space:nowrap;}
+.btn:hover{background:#333d39;}
+.btn.secondary{background:transparent;color:var(--ink);border:1px solid var(--line);}
+.btn.secondary:hover{border-color:var(--ink);}
+.btn.danger{background:var(--danger);border-color:var(--danger);}
+.btn.danger:hover{background:#96382a;}
+.btn.small{padding:5px 10px;font-size:12px;}
+.btn:disabled{opacity:.5;cursor:not-allowed;}
+
+table{width:100%;border-collapse:collapse;font-size:13.5px;}
+th{text-align:left;font-family:"IBM Plex Mono",monospace;font-size:10.5px;text-transform:uppercase;letter-spacing:.5px;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--line);}
+td{padding:9px 10px;border-bottom:1px solid #ececE4;vertical-align:middle;}
+tr:last-child td{border-bottom:none;}
+.tag{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-family:"IBM Plex Mono",monospace;}
+.tag.green{background:var(--court-dim);color:var(--court);}
+.tag.clay{background:var(--clay-dim);color:var(--clay);}
+.pill{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:20px;font-size:11.5px;background:var(--court-dim);color:var(--court);margin:2px 4px 2px 0;font-family:"IBM Plex Mono",monospace;}
+.pill button{background:none;border:none;color:inherit;font-size:12px;padding:0;line-height:1;}
+.empty{color:var(--muted);font-size:13px;padding:18px 4px;text-align:center;border:1px dashed var(--line);border-radius:8px;}
+.hint{font-size:12px;color:var(--muted);margin-top:6px;}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px;}
+@media(max-width:900px){.grid2{grid-template-columns:1fr;}}
+
+/* status colors for calendar/grid */
+.status-available{background:#fff;}
+.status-occupied{background:var(--court-dim);}
+.status-conflict{background:var(--danger-dim);color:var(--danger);}
+.status-generated{background:var(--court-dim);color:var(--court);}
+.status-manual{background:#fdf1de;color:var(--gold);}
+
+/* calendar grid */
+.cal-wrap{overflow-x:auto;}
+.cal{border-collapse:collapse;min-width:760px;}
+.cal th{white-space:nowrap;}
+.cal td{border:1px solid var(--line);padding:6px 8px;font-size:12.5px;vertical-align:top;min-width:120px;}
+.cal .daycell{border-radius:6px;padding:6px 8px;}
+.cal .sport{font-weight:600;}
+.cal .fac{font-size:11px;color:var(--muted);}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:12px;color:var(--muted);}
+.legend span{display:inline-flex;align-items:center;gap:5px;}
+.legend i{width:11px;height:11px;border-radius:3px;display:inline-block;}
+
+/* login */
+.login-wrap{min-height:100vh;display:flex;align-items:center;justify-content:center;background:
+  radial-gradient(circle at 20% 20%, rgba(47,109,94,.10), transparent 45%),
+  radial-gradient(circle at 85% 75%, rgba(199,106,62,.10), transparent 45%), var(--paper);}
+.login-card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:36px 34px;width:380px;}
+.login-card .brand{margin-bottom:26px;color:var(--ink);}
+.login-card .brand .name b{font-size:19px;}
+.login-card .brand .name span{color:var(--muted);}
+.login-tabs{display:flex;gap:0;margin-bottom:18px;border-bottom:1px solid var(--line);}
+.login-tabs button{flex:1;padding:9px 0;background:none;border:none;font-size:13px;color:var(--muted);border-bottom:2px solid transparent;font-family:"IBM Plex Mono",monospace;text-transform:uppercase;letter-spacing:.5px;}
+.login-tabs button.active{color:var(--court);border-bottom-color:var(--court);}
+.login-card .field{margin-bottom:12px;}
+#authMsg{font-size:12.5px;margin-top:10px;min-height:16px;}
+#authMsg.err{color:var(--danger);}
+#authMsg.ok{color:var(--court);}
+.loading-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:13px;}
+
+.conflict-box{border:1px solid var(--danger);background:var(--danger-dim);border-radius:8px;padding:12px 14px;margin-bottom:14px;color:var(--danger);font-size:13px;}
+.conflict-box b{display:block;margin-bottom:4px;}
+.badge-count{background:var(--clay);color:#fff;border-radius:20px;font-size:10px;padding:1px 6px;margin-left:6px;font-family:"IBM Plex Mono",monospace;}
+.select-multi{display:flex;flex-wrap:wrap;gap:6px;}
+.chip{padding:5px 11px;border-radius:20px;border:1px solid var(--line);font-size:12.5px;background:var(--paper);}
+.chip.on{background:var(--court);border-color:var(--court);color:#fff;}
+.toolbar{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px;}
+.stat-row{display:flex;gap:14px;flex-wrap:wrap;margin-bottom:20px;}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 18px;min-width:130px;}
+.stat .n{font-size:26px;font-family:"IBM Plex Mono",monospace;color:var(--court);}
+.stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-family:"IBM Plex Mono",monospace;}
+</style>
+</head>
+<body>
+
+<div id="loading" class="loading-screen">loading pe programme planner…</div>
+
+<!-- ===================== LOGIN ===================== -->
+<div id="loginScreen" class="login-wrap" style="display:none;">
+  <div class="login-card">
+    <div class="brand">
+      <div class="mark"></div>
+      <div class="name"><b>PE Programme Planner</b><span>SCHOOL SIGN IN</span></div>
+    </div>
+    <div class="login-tabs">
+      <button id="tabLogin" class="active" onclick="setAuthTab('login')">Log in</button>
+      <button id="tabSignup" onclick="setAuthTab('signup')">Create account</button>
+      <button id="tabReset" onclick="setAuthTab('reset')">Reset</button>
+    </div>
+    <form id="authForm" onsubmit="return handleAuthSubmit(event)">
+      <div class="field"><label>Email</label><input type="email" id="authEmail" required></div>
+      <div class="field" id="pwField"><label>Password</label><input type="password" id="authPassword" minlength="6"></div>
+      <button class="btn" style="width:100%;margin-top:6px;" type="submit" id="authSubmitBtn">Log in</button>
+    </form>
+    <div id="authMsg"></div>
+  </div>
+</div>
+
+<!-- ===================== APP ===================== -->
+<div id="app">
+  <div class="sidebar">
+    <div class="brand">
+      <div class="mark"></div>
+      <div class="name"><b>PE Programme<br>Planner</b><span id="schoolNameTag">SCHOOL</span></div>
+    </div>
+    <button class="navbtn active" data-page="dashboard" onclick="goPage('dashboard')"><span class="num">00</span>Dashboard</button>
+    <button class="navbtn" data-page="classes" onclick="goPage('classes')"><span class="num">01</span>Classes &amp; timetable</button>
+    <button class="navbtn" data-page="sports" onclick="goPage('sports')"><span class="num">02</span>Sports</button>
+    <button class="navbtn" data-page="facilities" onclick="goPage('facilities')"><span class="num">03</span>Facilities</button>
+    <button class="navbtn" data-page="periods" onclick="goPage('periods')"><span class="num">04</span>Periods &amp; dates</button>
+    <button class="navbtn" data-page="programme-setup" onclick="goPage('programme-setup')"><span class="num">05</span>Programme setup</button>
+    <button class="navbtn" data-page="generator" onclick="goPage('generator')"><span class="num">06</span>Generator</button>
+    <button class="navbtn" data-page="calendar" onclick="goPage('calendar')"><span class="num">07</span>Calendar / grid</button>
+    <button class="navbtn" data-page="export" onclick="goPage('export')"><span class="num">08</span>Export / print</button>
+    <button class="navbtn" data-page="settings" onclick="goPage('settings')"><span class="num">09</span>Settings</button>
+    <div class="sidebar-foot">
+      <div id="userEmailTag" class="mono"></div>
+      <button onclick="logout()">Log out</button>
+    </div>
+  </div>
+  <div class="main" id="main"></div>
+</div>
+
+<script>
+/* =========================================================
+   CONFIG — your Supabase project
+   ========================================================= */
+const SUPABASE_URL = "https://mihsgxvwddjfmwxyfzia.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_M7zTAWdwjuk-FV9N2hbM_g_0VJOUUmY";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday"];
+
+/* in-memory cache of the current school's data */
+let STATE = {
+  session: null,
+  school: null,
+  yearGroups: [], classes: [], sessions: [],
+  sports: [], facilities: [], sportFacilities: [],
+  periods: [], unavailable: [], ygSports: [],
+  entries: []
+};
+let currentPage = 'dashboard';
+let currentPeriodFilter = null;
+
+/* ---------------------------------------------------------
+   AUTH
+   --------------------------------------------------------- */
+let authTab = 'login';
+function setAuthTab(tab){
+  authTab = tab;
+  ['tabLogin','tabSignup','tabReset'].forEach(id=>document.getElementById(id).classList.remove('active'));
+  document.getElementById(tab==='login'?'tabLogin':tab==='signup'?'tabSignup':'tabReset').classList.add('active');
+  document.getElementById('authSubmitBtn').textContent = tab==='login'?'Log in':tab==='signup'?'Create account':'Send reset email';
+  document.getElementById('pwField').style.display = tab==='reset' ? 'none' : 'flex';
+  document.getElementById('authMsg').textContent='';
+}
+
+async function handleAuthSubmit(e){
+  e.preventDefault();
+  const email = document.getElementById('authEmail').value.trim();
+  const password = document.getElementById('authPassword').value;
+  const msg = document.getElementById('authMsg');
+  msg.className=''; msg.textContent='working…';
+  try{
+    if(authTab==='login'){
+      const {error} = await sb.auth.signInWithPassword({email, password});
+      if(error) throw error;
+    } else if(authTab==='signup'){
+      const {error} = await sb.auth.signUp({email, password});
+      if(error) throw error;
+      msg.className='ok';
+      msg.textContent='Account created. Check your inbox to confirm, then log in.';
+      return;
+    } else {
+      const {error} = await sb.auth.resetPasswordForEmail(email);
+      if(error) throw error;
+      msg.className='ok';
+      msg.textContent='Password reset email sent.';
+      return;
+    }
+    msg.textContent='';
+  }catch(err){
+    msg.className='err';
+    msg.textContent = err.message || 'Something went wrong.';
+  }
+  return false;
+}
+
+async function logout(){
+  await sb.auth.signOut();
+  location.reload();
+}
+
+/* ---------------------------------------------------------
+   BOOT
+   --------------------------------------------------------- */
+async function boot(){
+  const {data:{session}} = await sb.auth.getSession();
+  STATE.session = session;
+  document.getElementById('loading').style.display='none';
+  if(!session){
+    document.getElementById('loginScreen').style.display='flex';
+    return;
+  }
+  document.getElementById('userEmailTag').textContent = session.user.email;
+  await loadAll();
+  document.getElementById('app').classList.add('ready');
+  goPage('dashboard');
+}
+
+sb.auth.onAuthStateChange((event, session)=>{
+  if(event==='SIGNED_IN' && !STATE.session){ location.reload(); }
+  if(event==='SIGNED_OUT'){ location.reload(); }
+});
+
+async function loadAll(){
+  const uid = STATE.session.user.id;
+  const [school, yg, cls, sess, sports, fac, sf, per, unav, ygs, entries] = await Promise.all([
+    sb.from('schools').select('*').eq('id', uid).maybeSingle(),
+    sb.from('year_groups').select('*').eq('school_id', uid).order('name'),
+    sb.from('classes').select('*').eq('school_id', uid).order('name'),
+    sb.from('pe_sessions').select('*').eq('school_id', uid),
+    sb.from('sports').select('*').eq('school_id', uid).order('name'),
+    sb.from('facilities').select('*').eq('school_id', uid).order('name'),
+    sb.from('sport_facilities').select('*').eq('school_id', uid),
+    sb.from('periods').select('*').eq('school_id', uid).order('start_date'),
+    sb.from('unavailable_dates').select('*').eq('school_id', uid).order('date'),
+    sb.from('year_group_sports').select('*').eq('school_id', uid),
+    sb.from('programme_entries').select('*').eq('school_id', uid).order('date'),
+  ]);
+  STATE.school = school.data || {id:uid, name:''};
+  STATE.yearGroups = yg.data || [];
+  STATE.classes = cls.data || [];
+  STATE.sessions = sess.data || [];
+  STATE.sports = sports.data || [];
+  STATE.facilities = fac.data || [];
+  STATE.sportFacilities = sf.data || [];
+  STATE.periods = per.data || [];
+  STATE.unavailable = unav.data || [];
+  STATE.ygSports = ygs.data || [];
+  STATE.entries = entries.data || [];
+  document.getElementById('schoolNameTag').textContent = STATE.school.name ? STATE.school.name.toUpperCase() : 'UNNAMED SCHOOL';
+}
+
+/* ---------------------------------------------------------
+   NAV
+   --------------------------------------------------------- */
+function goPage(page){
+  currentPage = page;
+  document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.page===page));
+  render();
+}
+
+function render(){
+  const map = {
+    dashboard: renderDashboard,
+    classes: renderClasses,
+    sports: renderSports,
+    facilities: renderFacilities,
+    periods: renderPeriods,
+    'programme-setup': renderProgrammeSetup,
+    generator: renderGenerator,
+    calendar: renderCalendar,
+    export: renderExport,
+    settings: renderSettings,
+  };
+  document.getElementById('main').innerHTML = '';
+  (map[currentPage] || renderDashboard)();
+}
+
+function head(eyebrow,title,sub){
+  return `<div class="pagehead"><div><div class="eyebrow">${eyebrow}</div><h2>${title}</h2>${sub?`<p class="sub">${sub}</p>`:''}</div></div>`;
+}
+function el(html){ const d=document.createElement('div'); d.innerHTML=html.trim(); return d.firstChild; }
+function esc(s){ return (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+function byId(arr,id){ return arr.find(x=>x.id===id); }
+
+/* ---------------------------------------------------------
+   DASHBOARD
+   --------------------------------------------------------- */
+function renderDashboard(){
+  const m = document.getElementById('main');
+  const conflicts = STATE.entries.filter(e=>e.status==='conflict').length;
+  m.appendChild(el(head('Overview','Dashboard', `Everything below comes from ${esc(STATE.school.name)||'your school'}'s own data — nothing here is pre-loaded.`)));
+
+  const stats = el(`<div class="stat-row">
+    <div class="stat"><div class="n">${STATE.classes.length}</div><div class="l">Classes</div></div>
+    <div class="stat"><div class="n">${STATE.sessions.length}</div><div class="l">Weekly sessions</div></div>
+    <div class="stat"><div class="n">${STATE.sports.length}</div><div class="l">Sports</div></div>
+    <div class="stat"><div class="n">${STATE.facilities.length}</div><div class="l">Facilities</div></div>
+    <div class="stat"><div class="n">${STATE.periods.length}</div><div class="l">Periods</div></div>
+    <div class="stat"><div class="n" style="color:${conflicts?'var(--danger)':'var(--court)'}">${conflicts}</div><div class="l">Conflicts</div></div>
+  </div>`);
+  m.appendChild(stats);
+
+  const steps = [
+    ['School name', !!STATE.school.name, 'settings'],
+    ['Year groups & classes', STATE.classes.length>0, 'classes'],
+    ['Weekly PE sessions', STATE.sessions.length>0, 'classes'],
+    ['Sports & facilities', STATE.sports.length>0 && STATE.facilities.length>0, 'sports'],
+    ['Periods & unavailable dates', STATE.periods.length>0, 'periods'],
+    ['Year-group programme choices', STATE.ygSports.length>0, 'programme-setup'],
+    ['Programme generated', STATE.entries.length>0, 'generator'],
+  ];
+  const panel = el(`<div class="panel"><h3>Setup checklist</h3><table><tbody></tbody></table></div>`);
+  const tbody = panel.querySelector('tbody');
+  steps.forEach(([label, done, page])=>{
+    tbody.appendChild(el(`<tr>
+      <td style="width:26px;">${done?'<span class="tag green">done</span>':'<span class="tag clay">to do</span>'}</td>
+      <td>${label}</td>
+      <td style="text-align:right;"><button class="btn secondary small" onclick="goPage('${page}')">Open →</button></td>
+    </tr>`));
+  });
+  m.appendChild(panel);
+
+  if(conflicts>0){
+    m.appendChild(el(`<div class="conflict-box"><b>${conflicts} unresolved conflict${conflicts>1?'s':''}</b>
+      No compatible facility was free for these sessions. Open the Generator or Calendar to review and reassign them manually.</div>`));
+  }
+}
+
+/* ---------------------------------------------------------
+   CLASSES & TIMETABLE
+   --------------------------------------------------------- */
+function renderClasses(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('01 · Structure','Classes &amp; timetable',"Create year groups, classes, and each class's weekly PE sessions.")));
+
+  // Year groups panel
+  const ygPanel = el(`<div class="panel"><h3>Year groups</h3>
+    <div class="row" style="margin-bottom:12px;">
+      <div class="field"><label>New year group name</label><input type="text" id="newYG" placeholder="e.g. Year 5"></div>
+      <button class="btn" style="align-self:flex-end;" onclick="addYearGroup()">Add year group</button>
+    </div>
+    <div id="ygList"></div>
+  </div>`);
+  m.appendChild(ygPanel);
+  const ygList = ygPanel.querySelector('#ygList');
+  if(STATE.yearGroups.length===0){ ygList.appendChild(el(`<div class="empty">No year groups yet.</div>`)); }
+  else STATE.yearGroups.forEach(yg=>{
+    ygList.appendChild(el(`<span class="pill">${esc(yg.name)} <button onclick="deleteRow('year_groups','${yg.id}')">✕</button></span>`));
+  });
+
+  // Classes panel
+  const ygOptions = STATE.yearGroups.map(yg=>`<option value="${yg.id}">${esc(yg.name)}</option>`).join('');
+  const clsPanel = el(`<div class="panel"><h3>Classes</h3>
+    <div class="row" style="margin-bottom:12px;">
+      <div class="field"><label>Class name</label><input type="text" id="newClassName" placeholder="e.g. 5A"></div>
+      <div class="field"><label>Year group</label><select id="newClassYG"><option value="">— none —</option>${ygOptions}</select></div>
+      <button class="btn" style="align-self:flex-end;" onclick="addClass()">Add class</button>
+    </div>
+    <table><thead><tr><th>Class</th><th>Year group</th><th>Weekly sessions</th><th></th></tr></thead><tbody id="clsBody"></tbody></table>
+  </div>`);
+  m.appendChild(clsPanel);
+  const clsBody = clsPanel.querySelector('#clsBody');
+  if(STATE.classes.length===0){ clsBody.appendChild(el(`<tr><td colspan="4" class="empty">No classes yet — add one above.</td></tr>`)); }
+  STATE.classes.forEach(c=>{
+    const yg = byId(STATE.yearGroups, c.year_group_id);
+    const sessions = STATE.sessions.filter(s=>s.class_id===c.id).sort((a,b)=>a.day_of_week-b.day_of_week || a.start_time.localeCompare(b.start_time));
+    const sessHtml = sessions.map(s=>`<span class="pill">${DAYS[s.day_of_week].slice(0,3)} ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)} <button onclick="deleteRow('pe_sessions','${s.id}')">✕</button></span>`).join('') || '<span class="hint">none</span>';
+    clsBody.appendChild(el(`<tr>
+      <td><b>${esc(c.name)}</b></td>
+      <td>${yg?esc(yg.name):'<span class="hint">—</span>'}</td>
+      <td>${sessHtml}
+        <div class="row" style="margin-top:8px;">
+          <select class="mono" id="day_${c.id}">${DAYS.map((d,i)=>`<option value="${i}">${d}</option>`).join('')}</select>
+          <input type="time" id="start_${c.id}" value="09:00">
+          <input type="time" id="end_${c.id}" value="10:00">
+          <button class="btn small secondary" onclick="addSession('${c.id}')">+ Session</button>
+        </div>
+      </td>
+      <td><button class="btn small danger" onclick="deleteRow('classes','${c.id}')">Delete</button></td>
+    </tr>`));
+  });
+}
+
+async function addYearGroup(){
+  const name = document.getElementById('newYG').value.trim();
+  if(!name) return;
+  await sb.from('year_groups').insert({school_id: STATE.session.user.id, name});
+  await loadAll(); render();
+}
+async function addClass(){
+  const name = document.getElementById('newClassName').value.trim();
+  const ygId = document.getElementById('newClassYG').value || null;
+  if(!name) return;
+  await sb.from('classes').insert({school_id: STATE.session.user.id, name, year_group_id: ygId});
+  await loadAll(); render();
+}
+async function addSession(classId){
+  const day = parseInt(document.getElementById('day_'+classId).value,10);
+  const start = document.getElementById('start_'+classId).value;
+  const end = document.getElementById('end_'+classId).value;
+  if(!start || !end || start>=end){ alert('End time must be after start time.'); return; }
+  await sb.from('pe_sessions').insert({school_id: STATE.session.user.id, class_id: classId, day_of_week: day, start_time: start, end_time: end});
+  await loadAll(); render();
+}
+async function deleteRow(table, id){
+  await sb.from(table).delete().eq('id', id);
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   SPORTS
+   --------------------------------------------------------- */
+function renderSports(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('02 · Catalogue','Sports','Add the sports your school offers and the facilities each one can be played on.')));
+  const facOptions = STATE.facilities.map(f=>`<label class="chip" style="cursor:pointer;"><input type="checkbox" value="${f.id}" style="margin-right:6px;">${esc(f.name)}</label>`).join('');
+  const panel = el(`<div class="panel"><h3>Add a sport</h3>
+    <div class="field" style="max-width:320px;margin-bottom:10px;"><label>Sport name</label><input type="text" id="newSportName" placeholder="e.g. Basketball"></div>
+    <div class="field"><label>Possible facilities</label><div class="select-multi" id="newSportFacs">${facOptions || '<span class="hint">Add facilities first (page 03) to link them here — you can still create the sport now.</span>'}</div></div>
+    <button class="btn" style="margin-top:12px;" onclick="addSport()">Add sport</button>
+  </div>`);
+  m.appendChild(panel);
+  panel.querySelectorAll('#newSportFacs input').forEach(cb=>cb.addEventListener('change',()=>cb.closest('label').classList.toggle('on', cb.checked)));
+
+  const listPanel = el(`<div class="panel"><h3>Sports (${STATE.sports.length})</h3><table><thead><tr><th>Sport</th><th>Facilities</th><th></th></tr></thead><tbody id="sportsBody"></tbody></table></div>`);
+  m.appendChild(listPanel);
+  const tbody = listPanel.querySelector('#sportsBody');
+  if(STATE.sports.length===0){ tbody.appendChild(el(`<tr><td colspan="3" class="empty">No sports yet.</td></tr>`)); }
+  STATE.sports.forEach(sp=>{
+    const links = STATE.sportFacilities.filter(l=>l.sport_id===sp.id);
+    const facHtml = links.map(l=>{
+      const f = byId(STATE.facilities, l.facility_id);
+      return `<span class="pill">${f?esc(f.name):'?'} <button onclick="deleteRow('sport_facilities','${l.id}')">✕</button></span>`;
+    }).join('') || '<span class="hint">no facility linked</span>';
+    const unlinked = STATE.facilities.filter(f=>!links.some(l=>l.facility_id===f.id));
+    tbody.appendChild(el(`<tr>
+      <td><b>${esc(sp.name)}</b></td>
+      <td>${facHtml}
+        ${unlinked.length? `<div class="row" style="margin-top:8px;"><select id="linkfac_${sp.id}">${unlinked.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')}</select><button class="btn small secondary" onclick="linkFacility('${sp.id}')">+ Link</button></div>`:''}
+      </td>
+      <td><button class="btn small danger" onclick="deleteRow('sports','${sp.id}')">Delete</button></td>
+    </tr>`));
+  });
+}
+async function addSport(){
+  const name = document.getElementById('newSportName').value.trim();
+  if(!name) return;
+  const checked = Array.from(document.querySelectorAll('#newSportFacs input:checked')).map(cb=>cb.value);
+  const {data, error} = await sb.from('sports').insert({school_id: STATE.session.user.id, name}).select().single();
+  if(error){ alert(error.message); return; }
+  if(checked.length){
+    await sb.from('sport_facilities').insert(checked.map(fid=>({school_id: STATE.session.user.id, sport_id: data.id, facility_id: fid})));
+  }
+  await loadAll(); render();
+}
+async function linkFacility(sportId){
+  const facId = document.getElementById('linkfac_'+sportId).value;
+  await sb.from('sport_facilities').insert({school_id: STATE.session.user.id, sport_id: sportId, facility_id: facId});
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   FACILITIES
+   --------------------------------------------------------- */
+function renderFacilities(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('03 · Catalogue','Facilities','List every space PE can take place in. No capacity needed — the school knows how each one works.')));
+  const panel = el(`<div class="panel"><h3>Add a facility</h3>
+    <div class="row">
+      <div class="field"><label>Facility name</label><input type="text" id="newFacName" placeholder="e.g. Sports Hall"></div>
+      <button class="btn" style="align-self:flex-end;" onclick="addFacility()">Add facility</button>
+    </div></div>`);
+  m.appendChild(panel);
+  const listPanel = el(`<div class="panel"><h3>Facilities (${STATE.facilities.length})</h3><table><thead><tr><th>Name</th><th>Used by</th><th></th></tr></thead><tbody id="facBody"></tbody></table></div>`);
+  m.appendChild(listPanel);
+  const tbody = listPanel.querySelector('#facBody');
+  if(STATE.facilities.length===0){ tbody.appendChild(el(`<tr><td colspan="3" class="empty">No facilities yet.</td></tr>`)); }
+  STATE.facilities.forEach(f=>{
+    const usedBy = STATE.sportFacilities.filter(l=>l.facility_id===f.id).map(l=>byId(STATE.sports,l.sport_id)?.name).filter(Boolean);
+    tbody.appendChild(el(`<tr><td><b>${esc(f.name)}</b></td><td>${usedBy.length?esc(usedBy.join(', ')):'<span class="hint">not linked yet</span>'}</td>
+      <td><button class="btn small danger" onclick="deleteRow('facilities','${f.id}')">Delete</button></td></tr>`));
+  });
+}
+async function addFacility(){
+  const name = document.getElementById('newFacName').value.trim();
+  if(!name) return;
+  await sb.from('facilities').insert({school_id: STATE.session.user.id, name});
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   PERIODS & UNAVAILABLE DATES
+   --------------------------------------------------------- */
+function renderPeriods(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('04 · Calendar','Periods &amp; unavailable dates','Define your terms and every date PE cannot run — holidays, national days, events, anything else.')));
+
+  const panel = el(`<div class="panel"><h3>Add a period / term</h3>
+    <div class="row">
+      <div class="field"><label>Name</label><input type="text" id="perName" placeholder="e.g. Term 1"></div>
+      <div class="field"><label>Start date</label><input type="date" id="perStart"></div>
+      <div class="field"><label>End date</label><input type="date" id="perEnd"></div>
+      <button class="btn" style="align-self:flex-end;" onclick="addPeriod()">Add period</button>
+    </div></div>`);
+  m.appendChild(panel);
+
+  const listPanel = el(`<div class="panel"><h3>Periods</h3><table><thead><tr><th>Name</th><th>Start</th><th>End</th><th></th></tr></thead><tbody id="perBody"></tbody></table></div>`);
+  m.appendChild(listPanel);
+  const tbody = listPanel.querySelector('#perBody');
+  if(STATE.periods.length===0){ tbody.appendChild(el(`<tr><td colspan="4" class="empty">No periods yet.</td></tr>`)); }
+  STATE.periods.forEach(p=>{
+    tbody.appendChild(el(`<tr><td><b>${esc(p.name)}</b></td><td class="mono">${p.start_date}</td><td class="mono">${p.end_date}</td>
+      <td><button class="btn small danger" onclick="deleteRow('periods','${p.id}')">Delete</button></td></tr>`));
+  });
+
+  const perOptions = STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  const unavPanel = el(`<div class="panel"><h3>Unavailable dates</h3>
+    <div class="row">
+      <div class="field"><label>Date</label><input type="date" id="unavDate"></div>
+      <div class="field"><label>Label</label><input type="text" id="unavLabel" placeholder="e.g. National Day"></div>
+      <div class="field"><label>Period (optional)</label><select id="unavPeriod"><option value="">— any —</option>${perOptions}</select></div>
+      <button class="btn" style="align-self:flex-end;" onclick="addUnavailable()">Add date</button>
+    </div>
+    <table style="margin-top:14px;"><thead><tr><th>Date</th><th>Label</th><th>Period</th><th></th></tr></thead><tbody id="unavBody"></tbody></table>
+  </div>`);
+  m.appendChild(unavPanel);
+  const ubody = unavPanel.querySelector('#unavBody');
+  if(STATE.unavailable.length===0){ ubody.appendChild(el(`<tr><td colspan="4" class="empty">No unavailable dates yet.</td></tr>`)); }
+  STATE.unavailable.forEach(u=>{
+    const per = byId(STATE.periods, u.period_id);
+    ubody.appendChild(el(`<tr><td class="mono">${u.date}</td><td>${esc(u.label)}</td><td>${per?esc(per.name):'<span class="hint">any</span>'}</td>
+      <td><button class="btn small danger" onclick="deleteRow('unavailable_dates','${u.id}')">Delete</button></td></tr>`));
+  });
+}
+async function addPeriod(){
+  const name = document.getElementById('perName').value.trim();
+  const start = document.getElementById('perStart').value;
+  const end = document.getElementById('perEnd').value;
+  if(!name || !start || !end || start>end){ alert('Please provide a name and a valid date range.'); return; }
+  await sb.from('periods').insert({school_id: STATE.session.user.id, name, start_date:start, end_date:end});
+  await loadAll(); render();
+}
+async function addUnavailable(){
+  const date = document.getElementById('unavDate').value;
+  const label = document.getElementById('unavLabel').value.trim();
+  const period = document.getElementById('unavPeriod').value || null;
+  if(!date){ alert('Pick a date.'); return; }
+  await sb.from('unavailable_dates').insert({school_id: STATE.session.user.id, date, label, period_id: period});
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   PROGRAMME SETUP (year group -> sports)
+   --------------------------------------------------------- */
+function renderProgrammeSetup(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('05 · Planning','Programme setup','Choose which sports should be programmed for each year group.')));
+  if(STATE.yearGroups.length===0 || STATE.sports.length===0){
+    m.appendChild(el(`<div class="empty">Add at least one year group (page 01) and one sport (page 02) before setting up the programme.</div>`));
+    return;
+  }
+  STATE.yearGroups.forEach(yg=>{
+    const chosen = STATE.ygSports.filter(l=>l.year_group_id===yg.id).map(l=>l.sport_id);
+    const panel = el(`<div class="panel"><h3>${esc(yg.name)}</h3><div class="select-multi" id="yg_${yg.id}"></div></div>`);
+    const box = panel.querySelector(`#yg_${yg.id}`);
+    STATE.sports.forEach(sp=>{
+      const on = chosen.includes(sp.id);
+      box.appendChild(el(`<button type="button" class="chip ${on?'on':''}" onclick="toggleYgSport('${yg.id}','${sp.id}',this)">${esc(sp.name)}</button>`));
+    });
+    m.appendChild(panel);
+  });
+}
+async function toggleYgSport(ygId, sportId, btn){
+  const existing = STATE.ygSports.find(l=>l.year_group_id===ygId && l.sport_id===sportId);
+  if(existing){
+    await sb.from('year_group_sports').delete().eq('id', existing.id);
+  } else {
+    await sb.from('year_group_sports').insert({school_id: STATE.session.user.id, year_group_id: ygId, sport_id: sportId});
+  }
+  await loadAll();
+  btn.classList.toggle('on');
+}
+
+/* ---------------------------------------------------------
+   GENERATOR
+   --------------------------------------------------------- */
+function renderGenerator(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('06 · Engine','Programme generator','Builds a feasible programme from your classes, timetable, sports, facilities and dates. Two classes are never assigned the same facility at the same time.')));
+
+  const perOptions = STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)} (${p.start_date} → ${p.end_date})</option>`).join('');
+  const panel = el(`<div class="panel"><h3>Run generator</h3>
+    <div class="row">
+      <div class="field"><label>Period</label><select id="genPeriod">${perOptions || '<option value="">Add a period first</option>'}</select></div>
+      <button class="btn" style="align-self:flex-end;" ${STATE.periods.length?'':'disabled'} onclick="runGenerator()">Generate programme</button>
+      <button class="btn secondary" style="align-self:flex-end;" onclick="clearGenerated()">Clear generated (keep manual)</button>
+    </div>
+    <p class="hint">Existing entries marked "manual" are preserved and never overwritten by regeneration.</p>
+  </div>`);
+  m.appendChild(panel);
+
+  const conflicts = STATE.entries.filter(e=>e.status==='conflict');
+  if(conflicts.length){
+    const box = el(`<div class="conflict-box"><b>${conflicts.length} conflict${conflicts.length>1?'s':''} found</b>No available facility could be assigned for these — resolve them below or in the Calendar page.</div>`);
+    m.appendChild(box);
+    const tbl = el(`<div class="panel"><table><thead><tr><th>Date</th><th>Class</th><th>Sport</th><th></th></tr></thead><tbody></tbody></table></div>`);
+    const tbody = tbl.querySelector('tbody');
+    conflicts.forEach(c=>{
+      const cls = byId(STATE.classes, c.class_id);
+      const sp = byId(STATE.sports, c.sport_id);
+      tbody.appendChild(el(`<tr><td class="mono">${c.date}</td><td>${cls?esc(cls.name):'?'}</td><td>${sp?esc(sp.name):'—'}</td>
+        <td><button class="btn small danger" onclick="deleteRow('programme_entries','${c.id}')">Remove</button></td></tr>`));
+    });
+    m.appendChild(tbl);
+  }
+
+  const summaryPanel = el(`<div class="panel"><h3>Generated entries</h3><p class="hint">${STATE.entries.length} total entries stored. View and edit them on the Calendar / Grid page.</p>
+    <button class="btn secondary" onclick="goPage('calendar')">Open calendar →</button></div>`);
+  m.appendChild(summaryPanel);
+}
+
+function dateRange(start,end){
+  const out=[]; let d=new Date(start+'T00:00:00'); const e=new Date(end+'T00:00:00');
+  while(d<=e){ out.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
+  return out;
+}
+
+async function runGenerator(){
+  const periodId = document.getElementById('genPeriod').value;
+  if(!periodId){ alert('Choose a period first.'); return; }
+  const period = byId(STATE.periods, periodId);
+  const allDates = dateRange(period.start_date, period.end_date);
+  const unavailableDates = new Set(
+    STATE.unavailable.filter(u=>!u.period_id || u.period_id===periodId).map(u=>u.date)
+  );
+
+  // manual entries in this window are preserved and treated as occupying their facility.
+  const keepManual = STATE.entries.filter(e=>e.period_id===periodId && e.status==='manual');
+  const toDelete = STATE.entries.filter(e=>e.period_id===periodId && e.status!=='manual');
+  if(toDelete.length){
+    await sb.from('programme_entries').delete().in('id', toDelete.map(e=>e.id));
+  }
+
+  // facility occupancy map: `${date}|${startTime}` -> Set(facility_id)
+  const occupancy = {};
+  function occKey(date, start, end){ return `${date}`; }
+  function markOccupied(date, start, end, facilityId){
+    const key = date;
+    occupancy[key] = occupancy[key] || [];
+    occupancy[key].push({start, end, facilityId});
+  }
+  function isFree(date, start, end, facilityId){
+    const list = occupancy[date] || [];
+    return !list.some(o => o.facilityId===facilityId && overlaps(o.start,o.end,start,end));
+  }
+  function overlaps(s1,e1,s2,e2){ return s1 < e2 && s2 < e1; }
+
+  keepManual.forEach(e=>{
+    const sess = STATE.sessions.find(s=>s.id===e.session_id);
+    if(sess && e.facility_id) markOccupied(e.date, sess.start_time, sess.end_time, e.facility_id);
+  });
+
+  // round-robin sport index per year group to balance sports
+  const ygSportIndex = {};
+  function nextSport(ygId){
+    const options = STATE.ygSports.filter(l=>l.year_group_id===ygId).map(l=>l.sport_id);
+    if(options.length===0) return null;
+    const i = ygSportIndex[ygId] || 0;
+    const sportId = options[i % options.length];
+    ygSportIndex[ygId] = i+1;
+    return sportId;
+  }
+
+  const newEntries = [];
+  const classes = STATE.classes;
+  for(const date of allDates){
+    if(unavailableDates.has(date)) continue;
+    const dow = new Date(date+'T00:00:00').getDay(); // 0=Sun
+    const dowIdx = dow===0 ? 6 : dow-1; // convert to 0=Mon
+    for(const cls of classes){
+      const sessionsForDay = STATE.sessions.filter(s=>s.class_id===cls.id && s.day_of_week===dowIdx);
+      for(const sess of sessionsForDay){
+        // skip if manual entry already covers this class/session/date
+        if(keepManual.some(e=>e.class_id===cls.id && e.session_id===sess.id && e.date===date)) continue;
+        const ygId = cls.year_group_id;
+        if(!ygId){ continue; }
+        const sportId = nextSport(ygId);
+        if(!sportId){ continue; }
+        const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
+        let chosenFacility = null;
+        for(const facId of facOptions){
+          if(isFree(date, sess.start_time, sess.end_time, facId)){ chosenFacility = facId; break; }
+        }
+        const status = chosenFacility ? 'generated' : 'conflict';
+        if(chosenFacility) markOccupied(date, sess.start_time, sess.end_time, chosenFacility);
+        newEntries.push({
+          school_id: STATE.session.user.id,
+          class_id: cls.id, session_id: sess.id, period_id: periodId, date,
+          sport_id: sportId, facility_id: chosenFacility, status
+        });
+      }
+    }
+  }
+
+  if(newEntries.length){
+    // insert in batches of 500
+    for(let i=0;i<newEntries.length;i+=500){
+      await sb.from('programme_entries').insert(newEntries.slice(i,i+500));
+    }
+  }
+  await loadAll();
+  goPage('calendar');
+}
+
+async function clearGenerated(){
+  const gen = STATE.entries.filter(e=>e.status==='generated' || e.status==='conflict');
+  if(gen.length===0) return;
+  if(!confirm(`Remove ${gen.length} generated/conflict entries? Manual changes are kept.`)) return;
+  await sb.from('programme_entries').delete().in('id', gen.map(e=>e.id));
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   CALENDAR / GRID
+   --------------------------------------------------------- */
+function renderCalendar(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('07 · View','Calendar / grid','Every generated and manual allocation, by class and date. Click a cell to edit it.')));
+
+  const perOptions = `<option value="">All periods</option>` + STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+  const clsOptions = `<option value="">All classes</option>` + STATE.classes.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const toolbar = el(`<div class="toolbar">
+    <select id="calPeriod">${perOptions}</select>
+    <select id="calClass">${clsOptions}</select>
+    <button class="btn secondary small" onclick="applyCalFilter()">Filter</button>
+  </div>`);
+  m.appendChild(toolbar);
+
+  const legend = el(`<div class="legend">
+    <span><i style="background:var(--court-dim)"></i>Generated</span>
+    <span><i style="background:#fdf1de"></i>Manually modified</span>
+    <span><i style="background:var(--danger-dim)"></i>Conflict</span>
+    <span><i style="background:#fff;border:1px solid var(--line)"></i>Available (no entry)</span>
+  </div>`);
+
+  const wrap = el(`<div class="cal-wrap"></div>`);
+  const table = el(`<table class="cal"><thead><tr><th>Date</th><th>Day</th><th>Class</th><th>Sport</th><th>Facility</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>`);
+  wrap.appendChild(table);
+  m.appendChild(wrap);
+  m.appendChild(legend);
+
+  const tbody = table.querySelector('tbody');
+  const periodSel = document.getElementById('calPeriod');
+  const classSel = document.getElementById('calClass');
+  periodSel.value = STATE._calPeriodFilter || '';
+  classSel.value = STATE._calClassFilter || '';
+
+  window.applyCalFilter = function(){
+    STATE._calPeriodFilter = document.getElementById('calPeriod').value;
+    STATE._calClassFilter = document.getElementById('calClass').value;
+    render();
+  };
+
+  let entries = [...STATE.entries];
+  if(STATE._calPeriodFilter) entries = entries.filter(e=>e.period_id===STATE._calPeriodFilter);
+  if(STATE._calClassFilter) entries = entries.filter(e=>e.class_id===STATE._calClassFilter);
+  entries.sort((a,b)=> a.date.localeCompare(b.date));
+
+  if(entries.length===0){ tbody.appendChild(el(`<tr><td colspan="7" class="empty">No entries yet. Run the generator (page 06) or check your filters.</td></tr>`)); return; }
+
+  entries.forEach(e=>{
+    const cls = byId(STATE.classes, e.class_id);
+    const sp = byId(STATE.sports, e.sport_id);
+    const fac = byId(STATE.facilities, e.facility_id);
+    const dow = new Date(e.date+'T00:00:00').getDay();
+    const dayName = DAYS[dow===0?6:dow-1];
+    tbody.appendChild(el(`<tr class="status-${e.status}">
+      <td class="mono">${e.date}</td><td>${dayName}</td><td>${cls?esc(cls.name):'?'}</td>
+      <td>${sp?esc(sp.name):'<span class="hint">unassigned</span>'}</td>
+      <td>${fac?esc(fac.name):'<span class="hint">none</span>'}</td>
+      <td><span class="tag ${e.status==='conflict'?'clay':'green'}">${e.status}</span></td>
+      <td><button class="btn small secondary" onclick="editEntry('${e.id}')">Edit</button></td>
+    </tr>`));
+  });
+}
+
+async function editEntry(id){
+  const e = byId(STATE.entries, id);
+  const sportOptions = STATE.sports.map(s=>`<option value="${s.id}" ${s.id===e.sport_id?'selected':''}>${esc(s.name)}</option>`).join('');
+  const facOptions = STATE.facilities.map(f=>`<option value="${f.id}" ${f.id===e.facility_id?'selected':''}>${esc(f.name)}</option>`).join('');
+  const sport = prompt('Sport id list — choose by typing exact name, or leave blank to keep:\n' + STATE.sports.map(s=>s.name).join(', '), byId(STATE.sports,e.sport_id)?.name||'');
+  if(sport===null) return;
+  const fac = prompt('Facility — choose by typing exact name, or leave blank for none:\n' + STATE.facilities.map(f=>f.name).join(', '), byId(STATE.facilities,e.facility_id)?.name||'');
+  if(fac===null) return;
+  const sportObj = STATE.sports.find(s=>s.name.toLowerCase()===sport.trim().toLowerCase());
+  const facObj = STATE.facilities.find(f=>f.name.toLowerCase()===fac.trim().toLowerCase());
+
+  // conflict check: is facility free at this date/session for another class?
+  let status = 'manual';
+  if(facObj){
+    const sess = byId(STATE.sessions, e.session_id);
+    const clash = STATE.entries.some(other => other.id!==e.id && other.date===e.date && other.facility_id===facObj.id && (()=>{
+      const os = byId(STATE.sessions, other.session_id);
+      if(!sess || !os) return false;
+      return sess.start_time < os.end_time && os.start_time < sess.end_time;
+    })());
+    if(clash) status='conflict';
+  } else {
+    status='conflict';
+  }
+  await sb.from('programme_entries').update({sport_id: sportObj?sportObj.id:null, facility_id: facObj?facObj.id:null, status}).eq('id', id);
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   EXPORT / PRINT
+   --------------------------------------------------------- */
+function renderExport(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('08 · Output','Export / print','Print the current calendar view, or export it as CSV.')));
+  const panel = el(`<div class="panel"><h3>Export options</h3>
+    <div class="row">
+      <button class="btn" onclick="window.print()">Print current programme</button>
+      <button class="btn secondary" onclick="exportCSV()">Download CSV</button>
+    </div>
+    <p class="hint">Print uses your browser's print dialog — set layout to landscape for wide programmes. CSV includes date, class, sport, facility, status.</p>
+  </div>`);
+  m.appendChild(panel);
+}
+function exportCSV(){
+  const rows = [['Date','Day','Class','Sport','Facility','Status']];
+  STATE.entries.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
+    const cls = byId(STATE.classes, e.class_id);
+    const sp = byId(STATE.sports, e.sport_id);
+    const fac = byId(STATE.facilities, e.facility_id);
+    const dow = new Date(e.date+'T00:00:00').getDay();
+    rows.push([e.date, DAYS[dow===0?6:dow-1], cls?cls.name:'', sp?sp.name:'', fac?fac.name:'', e.status]);
+  });
+  const csv = rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'pe-programme.csv';
+  a.click();
+}
+
+/* ---------------------------------------------------------
+   SETTINGS
+   --------------------------------------------------------- */
+function renderSettings(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('09 · Account','Settings',"Your school's name and account details.")));
+  const panel = el(`<div class="panel"><h3>School</h3>
+    <div class="field" style="max-width:360px;"><label>School name</label><input type="text" id="schoolNameInput" value="${esc(STATE.school.name)}"></div>
+    <button class="btn" style="margin-top:12px;" onclick="saveSchoolName()">Save</button>
+  </div>`);
+  m.appendChild(panel);
+  const acc = el(`<div class="panel"><h3>Account</h3>
+    <p class="mono" style="font-size:13px;">${esc(STATE.session.user.email)}</p>
+    <button class="btn secondary" onclick="logout()">Log out</button>
+  </div>`);
+  m.appendChild(acc);
+}
+async function saveSchoolName(){
+  const name = document.getElementById('schoolNameInput').value.trim();
+  await sb.from('schools').update({name}).eq('id', STATE.session.user.id);
+  await loadAll(); render();
+}
+
+/* ---------------------------------------------------------
+   GO
+   --------------------------------------------------------- */
+boot();
+</script>
+</body>
+</html>
