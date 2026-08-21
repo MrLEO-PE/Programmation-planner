@@ -447,6 +447,11 @@ async function promptNewSchool(){
    NAV
    --------------------------------------------------------- */
 function goPage(page){
+  if(!STATE.currentSchoolId && page!=='settings'){
+    renderNoSchools();
+    document.querySelectorAll('.navbtn').forEach(b=>b.classList.remove('active'));
+    return;
+  }
   currentPage = page;
   document.querySelectorAll('.navbtn').forEach(b=>b.classList.toggle('active', b.dataset.page===page));
   render();
@@ -1044,6 +1049,13 @@ function exportCSV(){
 function renderSettings(){
   const m = document.getElementById('main');
   m.appendChild(el(head('09 · Account','Settings',"Manage the current school's name, or switch between the schools on this account.")));
+
+  if(!STATE.currentSchoolId || !STATE.school){
+    m.appendChild(el(`<div class="panel"><h3>No school selected yet</h3>
+      <div class="field" style="max-width:320px;"><label>School name</label><input type="text" id="firstSchoolName" placeholder="e.g. Greenfield International School"></div>
+      <button class="btn" style="margin-top:12px;" onclick="createFirstSchool()">Create school</button></div>`));
+    return;
+  }
 
   const panel = el(`<div class="panel"><h3>Current school</h3>
     <div class="field" style="max-width:360px;"><label>School name</label><input type="text" id="schoolNameInput" value="${esc(STATE.school.name)}"></div>
