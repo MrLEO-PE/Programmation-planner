@@ -169,6 +169,7 @@ tr:last-child td{border-bottom:none;}
       <div class="mark"></div>
       <div class="name"><b>PE Programme<br>Planner</b><span id="schoolNameTag">SCHOOL</span></div>
     </div>
+    <div id="schoolSwitcher" style="margin-bottom:14px;"></div>
     <button class="navbtn active" data-page="dashboard" onclick="goPage('dashboard')"><span class="num">00</span>Dashboard</button>
     <button class="navbtn" data-page="classes" onclick="goPage('classes')"><span class="num">01</span>Classes &amp; timetable</button>
     <button class="navbtn" data-page="sports" onclick="goPage('sports')"><span class="num">02</span>Sports</button>
@@ -201,6 +202,7 @@ const DAYS = ["Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sun
 /* in-memory cache of the current school's data */
 let STATE = {
   session: null,
+  schools: [], currentSchoolId: null,
   school: null,
   yearGroups: [], classes: [], sessions: [],
   sports: [], facilities: [], sportFacilities: [],
@@ -237,10 +239,16 @@ async function handleAuthSubmit(e){
       STATE.session = session;
       document.getElementById('loginScreen').style.display='none';
       document.getElementById('userEmailTag').textContent = session.user.email;
-      await loadAll();
       document.getElementById('app').classList.add('ready');
+      await loadSchools();
+      if(STATE.schools.length===0){
+        renderNoSchools();
+      } else {
+        pickCurrentSchool();
+        await loadAll();
+        goPage('dashboard');
+      }
       booted = true;
-      goPage('dashboard');
       return false;
     } else if(authTab==='signup'){
       const {error} = await sb.auth.signUp({email, password, options:{emailRedirectTo: SITE_URL}});
@@ -281,10 +289,36 @@ async function boot(){
     return;
   }
   document.getElementById('userEmailTag').textContent = session.user.email;
+  await loadSchools();
+  if(STATE.schools.length===0){
+    document.getElementById('app').classList.add('ready');
+    renderNoSchools();
+    booted = true;
+    return;
+  }
+  pickCurrentSchool();
   await loadAll();
   document.getElementById('app').classList.add('ready');
   goPage('dashboard');
   booted = true;
+}
+
+function renderNoSchools(){
+  document.getElementById('main').innerHTML='';
+  document.getElementById('schoolNameTag').textContent='NO SCHOOL YET';
+  const box = document.getElementById('schoolSwitcher');
+  if(box) box.innerHTML='';
+  const m = document.getElementById('main');
+  m.appendChild(el(head('Welcome','Create your first school', 'Your account can hold several schools later — start with one.')));
+  const panel = el(`<div class="panel"><h3>New school</h3>
+    <div class="field" style="max-width:320px;"><label>School name</label><input type="text" id="firstSchoolName" placeholder="e.g. Greenfield International School"></div>
+    <button class="btn" style="margin-top:12px;" onclick="createFirstSchool()">Create school</button></div>`);
+  m.appendChild(panel);
+}
+async function createFirstSchool(){
+  const name = document.getElementById('firstSchoolName').value.trim();
+  const s = await createSchool(name);
+  if(s){ goPage('dashboard'); }
 }
 
 let booted = false;
@@ -296,22 +330,84 @@ sb.auth.onAuthStateChange((event, session)=>{
   if(event==='SIGNED_OUT'){ location.reload(); }
 });
 
+/* A user account can own several schools. STATE.schools holds the
+   list; STATE.currentSchoolId (persisted in localStorage) picks which
+   one's data is loaded into the rest of STATE. */
+async function loadSchools(){
+  const {data, error} = await sb.from('schools').select('*').order('created_at');
+  if(error){
+    console.error('loadSchools failed:', error);
+    alert('Could not load your schools from Supabase:\n' + error.message + '\n\nThis usually means the database schema needs the fix_schools.sql patch applied.');
+    STATE.schools = [];
+    return STATE.schools;
+  }
+  STATE.schools = data || [];
+  return STATE.schools;
+}
+
+function pickCurrentSchool(){
+  const stored = localStorage.getItem('pe_current_school');
+  if(stored && STATE.schools.some(s=>s.id===stored)){ STATE.currentSchoolId = stored; return; }
+  STATE.currentSchoolId = STATE.schools[0] ? STATE.schools[0].id : null;
+  if(STATE.currentSchoolId) localStorage.setItem('pe_current_school', STATE.currentSchoolId);
+}
+
+async function switchSchool(id){
+  STATE.currentSchoolId = id;
+  localStorage.setItem('pe_current_school', id);
+  await loadAll();
+  goPage('dashboard');
+}
+
+async function createSchool(name){
+  const {data, error} = await sb.from('schools').insert({owner_id: STATE.session.user.id, name: name||''}).select().single();
+  if(error){
+    console.error('createSchool failed:', error);
+    alert('Could not create the school:\n' + error.message + '\n\nThis usually means the database schema needs the fix_schools.sql patch applied.');
+    return null;
+  }
+  await loadSchools();
+  STATE.currentSchoolId = data.id;
+  localStorage.setItem('pe_current_school', data.id);
+  await loadAll();
+  return data;
+}
+
+async function deleteSchool(id){
+  const s = byId(STATE.schools, id);
+  if(!confirm(`Delete "${s?.name||'this school'}" and ALL of its data? This cannot be undone.`)) return;
+  await sb.from('schools').delete().eq('id', id);
+  await loadSchools();
+  if(STATE.currentSchoolId === id){
+    STATE.currentSchoolId = STATE.schools[0] ? STATE.schools[0].id : null;
+    if(STATE.currentSchoolId) localStorage.setItem('pe_current_school', STATE.currentSchoolId);
+    else localStorage.removeItem('pe_current_school');
+  }
+  await loadAll();
+  render();
+}
+
 async function loadAll(){
-  const uid = STATE.session.user.id;
-  const [school, yg, cls, sess, sports, fac, sf, per, unav, ygs, entries] = await Promise.all([
-    sb.from('schools').select('*').eq('id', uid).maybeSingle(),
-    sb.from('year_groups').select('*').eq('school_id', uid).order('name'),
-    sb.from('classes').select('*').eq('school_id', uid).order('name'),
-    sb.from('pe_sessions').select('*').eq('school_id', uid),
-    sb.from('sports').select('*').eq('school_id', uid).order('name'),
-    sb.from('facilities').select('*').eq('school_id', uid).order('name'),
-    sb.from('sport_facilities').select('*').eq('school_id', uid),
-    sb.from('periods').select('*').eq('school_id', uid).order('start_date'),
-    sb.from('unavailable_dates').select('*').eq('school_id', uid).order('date'),
-    sb.from('year_group_sports').select('*').eq('school_id', uid),
-    sb.from('programme_entries').select('*').eq('school_id', uid).order('date'),
+  const sid = STATE.currentSchoolId;
+  STATE.school = STATE.schools.find(s=>s.id===sid) || {id:sid, name:''};
+  if(!sid){
+    STATE.yearGroups=[]; STATE.classes=[]; STATE.sessions=[]; STATE.sports=[]; STATE.facilities=[];
+    STATE.sportFacilities=[]; STATE.periods=[]; STATE.unavailable=[]; STATE.ygSports=[]; STATE.entries=[];
+    renderSchoolSwitcher();
+    return;
+  }
+  const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries] = await Promise.all([
+    sb.from('year_groups').select('*').eq('school_id', sid).order('name'),
+    sb.from('classes').select('*').eq('school_id', sid).order('name'),
+    sb.from('pe_sessions').select('*').eq('school_id', sid),
+    sb.from('sports').select('*').eq('school_id', sid).order('name'),
+    sb.from('facilities').select('*').eq('school_id', sid).order('name'),
+    sb.from('sport_facilities').select('*').eq('school_id', sid),
+    sb.from('periods').select('*').eq('school_id', sid).order('start_date'),
+    sb.from('unavailable_dates').select('*').eq('school_id', sid).order('date'),
+    sb.from('year_group_sports').select('*').eq('school_id', sid),
+    sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
   ]);
-  STATE.school = school.data || {id:uid, name:''};
   STATE.yearGroups = yg.data || [];
   STATE.classes = cls.data || [];
   STATE.sessions = sess.data || [];
@@ -322,7 +418,29 @@ async function loadAll(){
   STATE.unavailable = unav.data || [];
   STATE.ygSports = ygs.data || [];
   STATE.entries = entries.data || [];
-  document.getElementById('schoolNameTag').textContent = STATE.school.name ? STATE.school.name.toUpperCase() : 'UNNAMED SCHOOL';
+  renderSchoolSwitcher();
+}
+
+function renderSchoolSwitcher(){
+  const tag = document.getElementById('schoolNameTag');
+  if(tag) tag.textContent = STATE.school.name ? STATE.school.name.toUpperCase() : 'UNNAMED SCHOOL';
+  const box = document.getElementById('schoolSwitcher');
+  if(!box) return;
+  box.innerHTML = '';
+  const select = el(`<select id="schoolSwitchSelect" class="mono" style="width:100%;margin-bottom:6px;"></select>`);
+  STATE.schools.forEach(s=>{
+    select.appendChild(el(`<option value="${s.id}" ${s.id===STATE.currentSchoolId?'selected':''}>${esc(s.name)||'Unnamed school'}</option>`));
+  });
+  select.addEventListener('change', e=>switchSchool(e.target.value));
+  box.appendChild(select);
+  box.appendChild(el(`<button class="navbtn" style="font-size:12px;padding:6px 10px;" onclick="promptNewSchool()">+ New school</button>`));
+}
+
+async function promptNewSchool(){
+  const name = prompt('Name for the new school:');
+  if(name===null) return;
+  await createSchool(name.trim());
+  goPage('dashboard');
 }
 
 /* ---------------------------------------------------------
@@ -460,14 +578,14 @@ function renderClasses(){
 async function addYearGroup(){
   const name = document.getElementById('newYG').value.trim();
   if(!name) return;
-  await sb.from('year_groups').insert({school_id: STATE.session.user.id, name});
+  await sb.from('year_groups').insert({school_id: STATE.currentSchoolId, name});
   await loadAll(); render();
 }
 async function addClass(){
   const name = document.getElementById('newClassName').value.trim();
   const ygId = document.getElementById('newClassYG').value || null;
   if(!name) return;
-  await sb.from('classes').insert({school_id: STATE.session.user.id, name, year_group_id: ygId});
+  await sb.from('classes').insert({school_id: STATE.currentSchoolId, name, year_group_id: ygId});
   await loadAll(); render();
 }
 async function addSession(classId){
@@ -475,7 +593,7 @@ async function addSession(classId){
   const start = document.getElementById('start_'+classId).value;
   const end = document.getElementById('end_'+classId).value;
   if(!start || !end || start>=end){ alert('End time must be after start time.'); return; }
-  await sb.from('pe_sessions').insert({school_id: STATE.session.user.id, class_id: classId, day_of_week: day, start_time: start, end_time: end});
+  await sb.from('pe_sessions').insert({school_id: STATE.currentSchoolId, class_id: classId, day_of_week: day, start_time: start, end_time: end});
   await loadAll(); render();
 }
 async function deleteRow(table, id){
@@ -522,16 +640,16 @@ async function addSport(){
   const name = document.getElementById('newSportName').value.trim();
   if(!name) return;
   const checked = Array.from(document.querySelectorAll('#newSportFacs input:checked')).map(cb=>cb.value);
-  const {data, error} = await sb.from('sports').insert({school_id: STATE.session.user.id, name}).select().single();
+  const {data, error} = await sb.from('sports').insert({school_id: STATE.currentSchoolId, name}).select().single();
   if(error){ alert(error.message); return; }
   if(checked.length){
-    await sb.from('sport_facilities').insert(checked.map(fid=>({school_id: STATE.session.user.id, sport_id: data.id, facility_id: fid})));
+    await sb.from('sport_facilities').insert(checked.map(fid=>({school_id: STATE.currentSchoolId, sport_id: data.id, facility_id: fid})));
   }
   await loadAll(); render();
 }
 async function linkFacility(sportId){
   const facId = document.getElementById('linkfac_'+sportId).value;
-  await sb.from('sport_facilities').insert({school_id: STATE.session.user.id, sport_id: sportId, facility_id: facId});
+  await sb.from('sport_facilities').insert({school_id: STATE.currentSchoolId, sport_id: sportId, facility_id: facId});
   await loadAll(); render();
 }
 
@@ -560,7 +678,7 @@ function renderFacilities(){
 async function addFacility(){
   const name = document.getElementById('newFacName').value.trim();
   if(!name) return;
-  await sb.from('facilities').insert({school_id: STATE.session.user.id, name});
+  await sb.from('facilities').insert({school_id: STATE.currentSchoolId, name});
   await loadAll(); render();
 }
 
@@ -613,7 +731,7 @@ async function addPeriod(){
   const start = document.getElementById('perStart').value;
   const end = document.getElementById('perEnd').value;
   if(!name || !start || !end || start>end){ alert('Please provide a name and a valid date range.'); return; }
-  await sb.from('periods').insert({school_id: STATE.session.user.id, name, start_date:start, end_date:end});
+  await sb.from('periods').insert({school_id: STATE.currentSchoolId, name, start_date:start, end_date:end});
   await loadAll(); render();
 }
 async function addUnavailable(){
@@ -621,7 +739,7 @@ async function addUnavailable(){
   const label = document.getElementById('unavLabel').value.trim();
   const period = document.getElementById('unavPeriod').value || null;
   if(!date){ alert('Pick a date.'); return; }
-  await sb.from('unavailable_dates').insert({school_id: STATE.session.user.id, date, label, period_id: period});
+  await sb.from('unavailable_dates').insert({school_id: STATE.currentSchoolId, date, label, period_id: period});
   await loadAll(); render();
 }
 
@@ -651,7 +769,7 @@ async function toggleYgSport(ygId, sportId, btn){
   if(existing){
     await sb.from('year_group_sports').delete().eq('id', existing.id);
   } else {
-    await sb.from('year_group_sports').insert({school_id: STATE.session.user.id, year_group_id: ygId, sport_id: sportId});
+    await sb.from('year_group_sports').insert({school_id: STATE.currentSchoolId, year_group_id: ygId, sport_id: sportId});
   }
   await loadAll();
   btn.classList.toggle('on');
@@ -770,7 +888,7 @@ async function runGenerator(){
         const status = chosenFacility ? 'generated' : 'conflict';
         if(chosenFacility) markOccupied(date, sess.start_time, sess.end_time, chosenFacility);
         newEntries.push({
-          school_id: STATE.session.user.id,
+          school_id: STATE.currentSchoolId,
           class_id: cls.id, session_id: sess.id, period_id: periodId, date,
           sport_id: sportId, facility_id: chosenFacility, status
         });
@@ -925,12 +1043,34 @@ function exportCSV(){
    --------------------------------------------------------- */
 function renderSettings(){
   const m = document.getElementById('main');
-  m.appendChild(el(head('09 · Account','Settings',"Your school's name and account details.")));
-  const panel = el(`<div class="panel"><h3>School</h3>
+  m.appendChild(el(head('09 · Account','Settings',"Manage the current school's name, or switch between the schools on this account.")));
+
+  const panel = el(`<div class="panel"><h3>Current school</h3>
     <div class="field" style="max-width:360px;"><label>School name</label><input type="text" id="schoolNameInput" value="${esc(STATE.school.name)}"></div>
     <button class="btn" style="margin-top:12px;" onclick="saveSchoolName()">Save</button>
   </div>`);
   m.appendChild(panel);
+
+  const allPanel = el(`<div class="panel"><h3>All schools on this account (${STATE.schools.length})</h3>
+    <table><thead><tr><th>Name</th><th></th></tr></thead><tbody id="allSchoolsBody"></tbody></table>
+    <div class="row" style="margin-top:14px;">
+      <div class="field"><label>New school name</label><input type="text" id="newSchoolName" placeholder="e.g. Riverside Primary"></div>
+      <button class="btn secondary" style="align-self:flex-end;" onclick="addSchoolFromSettings()">+ Add school</button>
+    </div>
+  </div>`);
+  m.appendChild(allPanel);
+  const tbody = allPanel.querySelector('#allSchoolsBody');
+  STATE.schools.forEach(s=>{
+    const isCurrent = s.id===STATE.currentSchoolId;
+    tbody.appendChild(el(`<tr>
+      <td>${esc(s.name)||'<span class="hint">Unnamed school</span>'} ${isCurrent?'<span class="tag green">current</span>':''}</td>
+      <td style="text-align:right;">
+        ${isCurrent?'':`<button class="btn small secondary" onclick="switchSchool('${s.id}')">Switch to this school</button>`}
+        <button class="btn small danger" onclick="deleteSchool('${s.id}')">Delete</button>
+      </td>
+    </tr>`));
+  });
+
   const acc = el(`<div class="panel"><h3>Account</h3>
     <p class="mono" style="font-size:13px;">${esc(STATE.session.user.email)}</p>
     <button class="btn secondary" onclick="logout()">Log out</button>
@@ -939,8 +1079,16 @@ function renderSettings(){
 }
 async function saveSchoolName(){
   const name = document.getElementById('schoolNameInput').value.trim();
-  await sb.from('schools').update({name}).eq('id', STATE.session.user.id);
-  await loadAll(); render();
+  const {error} = await sb.from('schools').upsert({id: STATE.currentSchoolId, owner_id: STATE.session.user.id, name});
+  if(error){ alert(error.message); return; }
+  await loadSchools();
+  await loadAll();
+  render();
+}
+async function addSchoolFromSettings(){
+  const name = document.getElementById('newSchoolName').value.trim();
+  await createSchool(name);
+  render();
 }
 
 /* ---------------------------------------------------------
