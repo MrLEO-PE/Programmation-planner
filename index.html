@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v11-excel-import -->
+<!-- BUILD: v12-import-undo -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -210,7 +210,7 @@ let STATE = {
   yearGroups: [], classes: [], sessions: [],
   sports: [], facilities: [], sportFacilities: [],
   periods: [], unavailable: [], ygSports: [],
-  entries: []
+  entries: [], importBatches: []
 };
 let currentPage = 'dashboard';
 let currentPeriodFilter = null;
@@ -395,11 +395,11 @@ async function loadAll(){
   STATE.school = STATE.schools.find(s=>s.id===sid) || {id:sid, name:''};
   if(!sid){
     STATE.yearGroups=[]; STATE.classes=[]; STATE.sessions=[]; STATE.sports=[]; STATE.facilities=[];
-    STATE.sportFacilities=[]; STATE.periods=[]; STATE.unavailable=[]; STATE.ygSports=[]; STATE.entries=[];
+    STATE.sportFacilities=[]; STATE.periods=[]; STATE.unavailable=[]; STATE.ygSports=[]; STATE.entries=[]; STATE.importBatches=[];
     renderSchoolSwitcher();
     return;
   }
-  const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries] = await Promise.all([
+  const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries, batches] = await Promise.all([
     sb.from('year_groups').select('*').eq('school_id', sid),
     sb.from('classes').select('*').eq('school_id', sid),
     sb.from('pe_sessions').select('*').eq('school_id', sid),
@@ -410,8 +410,9 @@ async function loadAll(){
     sb.from('unavailable_dates').select('*').eq('school_id', sid).order('date'),
     sb.from('year_group_sports').select('*').eq('school_id', sid),
     sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
+    sb.from('import_batches').select('*').eq('school_id', sid).order('created_at', {ascending:false}),
   ]);
-  const results = {year_groups:yg, classes:cls, pe_sessions:sess, sports:sports, facilities:fac, sport_facilities:sf, periods:per, unavailable_dates:unav, year_group_sports:ygs, programme_entries:entries};
+  const results = {year_groups:yg, classes:cls, pe_sessions:sess, sports:sports, facilities:fac, sport_facilities:sf, periods:per, unavailable_dates:unav, year_group_sports:ygs, programme_entries:entries, import_batches:batches};
   const failed = Object.entries(results).filter(([k,v])=>v.error);
   if(failed.length){
     console.error('loadAll: some queries failed', failed);
@@ -429,6 +430,7 @@ async function loadAll(){
   if(!unav.error) STATE.unavailable = unav.data || [];
   if(!ygs.error) STATE.ygSports = ygs.data || [];
   if(!entries.error) STATE.entries = entries.data || [];
+  if(!batches.error) STATE.importBatches = batches.data || [];
   renderSchoolSwitcher();
 }
 
@@ -580,6 +582,17 @@ function renderImport(){
     <p class="hint">Expected layout: a grid with days as column headers, a period/time column on the left, and each PE session written as class name on one line and teacher(s) on the next line within the same cell. Nothing is saved to your school until you review and click Import at the bottom.</p>
   </div>`);
   m.appendChild(uploadPanel);
+
+  if(STATE.importBatches.length){
+    const histPanel = el(`<div class="panel"><h3>Previous imports</h3>
+      <table><thead><tr><th>When</th><th>Sessions</th><th></th></tr></thead><tbody id="importHistBody"></tbody></table></div>`);
+    m.appendChild(histPanel);
+    const hbody = histPanel.querySelector('#importHistBody');
+    STATE.importBatches.forEach(b=>{
+      hbody.appendChild(el(`<tr><td>${esc(b.label)}</td><td>${b.session_count}</td>
+        <td><button class="btn small danger" onclick="undoImportBatch('${b.id}')">Undo this import</button></td></tr>`));
+    });
+  }
 
   if(IMPORT.workbook && IMPORT.workbook.SheetNames.length>1){
     const sheetPanel = el(`<div class="panel"><h3>Sheet</h3>
@@ -779,6 +792,15 @@ function parseTimetableSheet(sheet){
   return {rows, headerRow, periodCol, timeCol, dayCols};
 }
 
+async function undoImportBatch(batchId){
+  const batch = STATE.importBatches.find(b=>b.id===batchId);
+  if(!confirm(`Delete all ${batch?batch.session_count:''} sessions from this import? This only removes sessions that came from this specific import — nothing else you've added is touched.`)) return;
+  if(!await dbWrite(sb.from('pe_sessions').delete().eq('import_batch_id', batchId), 'undo import (sessions)')) return;
+  if(!await dbWrite(sb.from('import_batches').delete().eq('id', batchId), 'undo import (batch record)')) return;
+  await loadAll();
+  render();
+}
+
 async function commitImport(){
   const ygSelections = {};
   IMPORT.uniqueClasses.forEach(cname=>{
@@ -836,7 +858,10 @@ async function commitImport(){
   });
 
   if(toInsert.length){
-    if(!await dbWrite(sb.from('pe_sessions').insert(toInsert), 'import sessions')) return;
+    const {data: batch, error: batchErr} = await sb.from('import_batches').insert({school_id: STATE.currentSchoolId, label: (IMPORT.sheetName||'Import')+' — '+new Date().toLocaleString(), session_count: toInsert.length}).select().single();
+    if(batchErr){ alert('Could not record import batch (sessions not saved): '+batchErr.message); return; }
+    const tagged = toInsert.map(s=>({...s, import_batch_id: batch.id}));
+    if(!await dbWrite(sb.from('pe_sessions').insert(tagged), 'import sessions')) return;
   }
 
   alert(`Import complete.\n${toInsert.length} sessions created.\n${skippedDup} skipped (already existed).\n${skippedUnchecked} skipped (unchecked).`);
