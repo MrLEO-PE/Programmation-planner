@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v14-calendar-grid-style -->
+<!-- BUILD: v16-primary-letter-teacher-pairing -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -783,8 +783,40 @@ function parseTimetableSheet(sheet){
         const lines = txt.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
         if(!lines.length) return;
         const className = lines[0];
-        const teacher = lines.slice(1).join(', ');
-        rows.push({day: dayIdx, start, end, className, teacher});
+        const teacherRaw = lines.slice(1).join('/');
+        const teacherList = teacherRaw.split(/[\/,+&]/).map(t=>t.trim()).filter(Boolean);
+        if(teacherList.length<=1){
+          rows.push({day: dayIdx, start, end, className, teacher: teacherList[0]||''});
+          return;
+        }
+        // Primary (Year 1–6): a code like "5CHJ" is a year number followed
+        // by one letter per class. When the letter count matches the
+        // teacher count, pair them in order: 1st letter <-> 1st teacher.
+        const codeMatch = className.match(/^(\d{1,2})\s*([A-Za-z]+)$/);
+        if(codeMatch){
+          const yearNum = parseInt(codeMatch[1],10);
+          const letters = codeMatch[2].split('');
+          if(yearNum>=1 && yearNum<=6 && letters.length===teacherList.length){
+            teacherList.forEach((teacher,i)=>{
+              rows.push({day: dayIdx, start, end, className: yearNum+letters[i], teacher});
+            });
+            return;
+          }
+        }
+        // Secondary (Year 7–11) or letter/teacher count mismatch:
+        // gender-split groups sharing the same time slot.
+        const boysCount = Math.ceil(teacherList.length/2);
+        const girlsCount = teacherList.length - boysCount;
+        teacherList.forEach((teacher,i)=>{
+          let groupName;
+          if(i<boysCount){
+            groupName = className + (boysCount>1 ? ` boys${i+1}` : ' boys');
+          } else {
+            const gi = i-boysCount+1;
+            groupName = className + (girlsCount>1 ? ` girls${gi}` : ' girls');
+          }
+          rows.push({day: dayIdx, start, end, className: groupName, teacher});
+        });
       }
     });
   }
