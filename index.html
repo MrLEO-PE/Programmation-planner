@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v13-weekly-grid-overview -->
+<!-- BUILD: v14-calendar-grid-style -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1301,7 +1301,7 @@ async function clearGenerated(){
    --------------------------------------------------------- */
 function renderCalendar(){
   const m = document.getElementById('main');
-  m.appendChild(el(head('07 · View','Calendar / grid','Every generated and manual allocation, by class and date. Click a cell to edit it.')));
+  m.appendChild(el(head('07 · View','Calendar / grid','Every generated and manual allocation, grouped by week — same layout as your weekly timetable, with the facility added to each session. Click a session to edit it.')));
 
   const perOptions = `<option value="">All periods</option>` + STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const clsOptions = `<option value="">All classes</option>` + STATE.classes.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
@@ -1316,16 +1316,9 @@ function renderCalendar(){
     <span><i style="background:var(--court-dim)"></i>Generated</span>
     <span><i style="background:#fdf1de"></i>Manually modified</span>
     <span><i style="background:var(--danger-dim)"></i>Conflict</span>
-    <span><i style="background:#fff;border:1px solid var(--line)"></i>Available (no entry)</span>
   </div>`);
-
-  const wrap = el(`<div class="cal-wrap"></div>`);
-  const table = el(`<table class="cal"><thead><tr><th>Date</th><th>Day</th><th>Class</th><th>Sport</th><th>Facility</th><th>Status</th><th></th></tr></thead><tbody></tbody></table>`);
-  wrap.appendChild(table);
-  m.appendChild(wrap);
   m.appendChild(legend);
 
-  const tbody = table.querySelector('tbody');
   const periodSel = document.getElementById('calPeriod');
   const classSel = document.getElementById('calClass');
   periodSel.value = STATE._calPeriodFilter || '';
@@ -1340,24 +1333,85 @@ function renderCalendar(){
   let entries = [...STATE.entries];
   if(STATE._calPeriodFilter) entries = entries.filter(e=>e.period_id===STATE._calPeriodFilter);
   if(STATE._calClassFilter) entries = entries.filter(e=>e.class_id===STATE._calClassFilter);
-  entries.sort((a,b)=> a.date.localeCompare(b.date));
 
-  if(entries.length===0){ tbody.appendChild(el(`<tr><td colspan="7" class="empty">No entries yet. Run the generator (page 06) or check your filters.</td></tr>`)); return; }
+  if(entries.length===0){
+    m.appendChild(el(`<div class="empty">No entries yet. Run the generator (page 06) or check your filters.</div>`));
+    return;
+  }
 
+  // group by ISO week (Monday of that week), then render one small
+  // timetable-style grid per week: time slots down the side, days across.
+  function mondayOf(dateStr){
+    const d = new Date(dateStr+'T00:00:00');
+    const dow = d.getDay(); // 0=Sun
+    const diff = dow===0 ? -6 : 1-dow;
+    d.setDate(d.getDate()+diff);
+    return d.toISOString().slice(0,10);
+  }
+  const withSession = [];
+  const noSession = [];
   entries.forEach(e=>{
-    const cls = byId(STATE.classes, e.class_id);
-    const sp = byId(STATE.sports, e.sport_id);
-    const fac = byId(STATE.facilities, e.facility_id);
-    const dow = new Date(e.date+'T00:00:00').getDay();
-    const dayName = DAYS[dow===0?6:dow-1];
-    tbody.appendChild(el(`<tr class="status-${e.status}">
-      <td class="mono">${e.date}</td><td>${dayName}</td><td>${cls?esc(cls.name):'?'}</td>
-      <td>${sp?esc(sp.name):'<span class="hint">unassigned</span>'}</td>
-      <td>${fac?esc(fac.name):'<span class="hint">none</span>'}</td>
-      <td><span class="tag ${e.status==='conflict'?'clay':'green'}">${e.status}</span></td>
-      <td><button class="btn small secondary" onclick="editEntry('${e.id}')">Edit</button></td>
-    </tr>`));
+    const sess = STATE.sessions.find(s=>s.id===e.session_id);
+    if(sess) withSession.push({...e, _slot: sess.start_time.slice(0,5)+'–'+sess.end_time.slice(0,5)});
+    else noSession.push(e);
   });
+
+  const weeks = {};
+  withSession.forEach(e=>{
+    const wk = mondayOf(e.date);
+    (weeks[wk] = weeks[wk] || []).push(e);
+  });
+  const weekKeys = Object.keys(weeks).sort();
+
+  weekKeys.forEach(wk=>{
+    const weekEntries = weeks[wk];
+    const slots = [...new Set(weekEntries.map(e=>e._slot))].sort();
+    const wkPanel = el(`<div class="panel"><h3>Week of ${wk}</h3>
+      <div class="cal-wrap"><table class="cal"><thead><tr><th>Time</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody></tbody></table></div>
+    </div>`);
+    const tbody = wkPanel.querySelector('tbody');
+    slots.forEach(slot=>{
+      const cells = [0,1,2,3,4].map(dayIdx=>{
+        const matches = weekEntries.filter(e=>{
+          const dow = new Date(e.date+'T00:00:00').getDay();
+          const idx = dow===0?6:dow-1;
+          return idx===dayIdx && e._slot===slot;
+        });
+        if(matches.length===0) return `<td></td>`;
+        const inner = matches.map(e=>{
+          const cls = byId(STATE.classes, e.class_id);
+          const sp = byId(STATE.sports, e.sport_id);
+          const fac = byId(STATE.facilities, e.facility_id);
+          return `<div class="status-${e.status}" style="border-radius:6px;padding:4px 6px;margin-bottom:4px;cursor:pointer;" onclick="editEntry('${e.id}')">
+            <div class="sport">${cls?esc(cls.name):'?'}</div>
+            <div class="fac">${sp?esc(sp.name):'unassigned'}${fac?' · '+esc(fac.name):''}</div>
+          </div>`;
+        }).join('');
+        return `<td>${inner}</td>`;
+      }).join('');
+      tbody.appendChild(el(`<tr><td class="mono"><b>${slot}</b></td>${cells}</tr>`));
+    });
+    m.appendChild(wkPanel);
+  });
+
+  if(noSession.length){
+    const tbl = el(`<div class="panel"><h3>Other entries (no linked weekly session)</h3>
+      <table><thead><tr><th>Date</th><th>Class</th><th>Sport</th><th>Facility</th><th>Status</th><th></th></tr></thead><tbody></tbody></table></div>`);
+    const tbody = tbl.querySelector('tbody');
+    noSession.sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
+      const cls = byId(STATE.classes, e.class_id);
+      const sp = byId(STATE.sports, e.sport_id);
+      const fac = byId(STATE.facilities, e.facility_id);
+      tbody.appendChild(el(`<tr class="status-${e.status}">
+        <td class="mono">${e.date}</td><td>${cls?esc(cls.name):'?'}</td>
+        <td>${sp?esc(sp.name):'<span class="hint">unassigned</span>'}</td>
+        <td>${fac?esc(fac.name):'<span class="hint">none</span>'}</td>
+        <td><span class="tag ${e.status==='conflict'?'clay':'green'}">${e.status}</span></td>
+        <td><button class="btn small secondary" onclick="editEntry('${e.id}')">Edit</button></td>
+      </tr>`));
+    });
+    m.appendChild(tbl);
+  }
 }
 
 async function editEntry(id){
