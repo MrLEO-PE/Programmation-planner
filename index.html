@@ -233,6 +233,15 @@ async function handleAuthSubmit(e){
     if(authTab==='login'){
       const {error} = await sb.auth.signInWithPassword({email, password});
       if(error) throw error;
+      const {data:{session}} = await sb.auth.getSession();
+      STATE.session = session;
+      document.getElementById('loginScreen').style.display='none';
+      document.getElementById('userEmailTag').textContent = session.user.email;
+      await loadAll();
+      document.getElementById('app').classList.add('ready');
+      booted = true;
+      goPage('dashboard');
+      return false;
     } else if(authTab==='signup'){
       const {error} = await sb.auth.signUp({email, password, options:{emailRedirectTo: SITE_URL}});
       if(error) throw error;
@@ -268,16 +277,22 @@ async function boot(){
   document.getElementById('loading').style.display='none';
   if(!session){
     document.getElementById('loginScreen').style.display='flex';
+    booted = true;
     return;
   }
   document.getElementById('userEmailTag').textContent = session.user.email;
   await loadAll();
   document.getElementById('app').classList.add('ready');
   goPage('dashboard');
+  booted = true;
 }
 
+let booted = false;
 sb.auth.onAuthStateChange((event, session)=>{
-  if(event==='SIGNED_IN' && !STATE.session){ location.reload(); }
+  if(!booted) return; // ignore events fired during initial getSession()
+  if(event==='SIGNED_IN' && (!STATE.session || STATE.session.user.id!==session.user.id)){
+    location.reload();
+  }
   if(event==='SIGNED_OUT'){ location.reload(); }
 });
 
