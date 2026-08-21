@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v12-import-undo -->
+<!-- BUILD: v13-weekly-grid-overview -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -873,9 +873,39 @@ async function commitImport(){
 /* ---------------------------------------------------------
    CLASSES & TIMETABLE
    --------------------------------------------------------- */
+function renderWeeklyTimetableGrid(){
+  if(STATE.sessions.length===0){
+    return el(`<div class="panel"><h3>Weekly timetable overview</h3><div class="empty">No sessions yet — add classes and sessions below, or import from Excel (page 01b).</div></div>`);
+  }
+  // group sessions by a common start-end time slot, across all classes/days
+  const slotKey = s => s.start_time.slice(0,5)+'–'+s.end_time.slice(0,5);
+  const slots = [...new Set(STATE.sessions.map(slotKey))].sort();
+
+  const panel = el(`<div class="panel"><h3>Weekly timetable overview</h3>
+    <div class="cal-wrap"><table class="cal"><thead><tr><th>Time</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody id="weeklyGridBody"></tbody></table></div>
+    <p class="hint">Read-only overview built from every class's weekly sessions below. Edit sessions in the table underneath, or re-import to update.</p>
+  </div>`);
+  const tbody = panel.querySelector('#weeklyGridBody');
+  slots.forEach(slot=>{
+    const cells = [0,1,2,3,4].map(dayIdx=>{
+      const matches = STATE.sessions.filter(s=>slotKey(s)===slot && s.day_of_week===dayIdx);
+      if(matches.length===0) return `<td></td>`;
+      const inner = matches.map(s=>{
+        const c = byId(STATE.classes, s.class_id);
+        return `<div class="sport">${c?esc(c.name):'?'}</div>${s.teacher?`<div class="fac">${esc(s.teacher)}</div>`:''}`;
+      }).join('<hr style="border:none;border-top:1px dashed var(--line);margin:4px 0;">');
+      return `<td>${inner}</td>`;
+    }).join('');
+    tbody.appendChild(el(`<tr><td class="mono"><b>${slot}</b></td>${cells}</tr>`));
+  });
+  return panel;
+}
+
 function renderClasses(){
   const m = document.getElementById('main');
   m.appendChild(el(head('01 · Structure','Classes &amp; timetable',`Create year groups, classes, and each class's weekly PE sessions. (${STATE.classes.length} class${STATE.classes.length===1?'':'es'} loaded for this school)`)));
+
+  m.appendChild(renderWeeklyTimetableGrid());
 
   // Year groups panel
   const ygPanel = el(`<div class="panel"><h3>Year groups</h3>
