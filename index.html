@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v16-primary-letter-teacher-pairing -->
+<!-- BUILD: v17-full-import-undo -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -826,11 +826,43 @@ function parseTimetableSheet(sheet){
 
 async function undoImportBatch(batchId){
   const batch = STATE.importBatches.find(b=>b.id===batchId);
-  if(!confirm(`Delete all ${batch?batch.session_count:''} sessions from this import? This only removes sessions that came from this specific import — nothing else you've added is touched.`)) return;
+  if(!batch){ alert('Could not find that import batch.'); return; }
+  if(!confirm(`Undo this import? This removes:\n- ${batch.session_count} session(s) it created\n- any class or year group it created, but ONLY if nothing else has used them since\n\nClasses/year groups that already existed before this import, or that you've added other sessions to since, are left untouched.`)) return;
+
+  // 1. delete this import's sessions first
   if(!await dbWrite(sb.from('pe_sessions').delete().eq('import_batch_id', batchId), 'undo import (sessions)')) return;
+
+  // 2. delete classes this import created, but only if no OTHER session
+  //    (outside this batch) still references them
+  const classIds = batch.created_class_ids || [];
+  let classesKept = 0, classesDeleted = 0;
+  for(const classId of classIds){
+    const stillUsed = STATE.sessions.some(s=>s.class_id===classId && s.import_batch_id!==batchId);
+    if(stillUsed){ classesKept++; continue; }
+    const {error} = await sb.from('classes').delete().eq('id', classId);
+    if(error){ console.error('Could not delete class', classId, error); classesKept++; continue; }
+    classesDeleted++;
+  }
+
+  // 3. delete year groups this import created, but only if no class still
+  //    references them (whether from this import or added since)
+  const ygIds = batch.created_year_group_ids || [];
+  let ygsKept = 0, ygsDeleted = 0;
+  for(const ygId of ygIds){
+    const {data: refs} = await sb.from('classes').select('id').eq('year_group_id', ygId).limit(1);
+    if(refs && refs.length){ ygsKept++; continue; }
+    const {error} = await sb.from('year_groups').delete().eq('id', ygId);
+    if(error){ console.error('Could not delete year group', ygId, error); ygsKept++; continue; }
+    ygsDeleted++;
+  }
+
   if(!await dbWrite(sb.from('import_batches').delete().eq('id', batchId), 'undo import (batch record)')) return;
+
   await loadAll();
   render();
+  if(classesKept>0 || ygsKept>0){
+    alert(`Undo complete, with some things kept because they're now used elsewhere:\n${classesDeleted} class(es) removed, ${classesKept} kept.\n${ygsDeleted} year group(s) removed, ${ygsKept} kept.`);
+  }
 }
 
 async function commitImport(){
@@ -838,6 +870,9 @@ async function commitImport(){
   IMPORT.uniqueClasses.forEach(cname=>{
     ygSelections[cname] = document.getElementById('ygmap_'+cssSafe(cname)).value;
   });
+
+  const newYearGroupIds = [];
+  const newClassIds = [];
 
   // 1. create any needed year groups
   const yearGroupIdFor = {};
@@ -854,6 +889,7 @@ async function commitImport(){
         if(error){ alert('Could not create year group "'+label+'": '+error.message); return; }
         STATE.yearGroups.push(data);
         existing = data;
+        newYearGroupIds.push(data.id);
       }
       yearGroupIdFor[cname] = existing.id;
     }
@@ -868,6 +904,7 @@ async function commitImport(){
       if(error){ alert('Could not create class "'+cname+'": '+error.message); return; }
       STATE.classes.push(data);
       existing = data;
+      newClassIds.push(data.id);
     }
     classIdFor[cname] = existing.id;
   }
@@ -889,14 +926,22 @@ async function commitImport(){
     toInsert.push({school_id: STATE.currentSchoolId, class_id: classId, day_of_week: r.day, start_time:start, end_time:end, teacher});
   });
 
-  if(toInsert.length){
-    const {data: batch, error: batchErr} = await sb.from('import_batches').insert({school_id: STATE.currentSchoolId, label: (IMPORT.sheetName||'Import')+' — '+new Date().toLocaleString(), session_count: toInsert.length}).select().single();
+  if(toInsert.length || newClassIds.length || newYearGroupIds.length){
+    const {data: batch, error: batchErr} = await sb.from('import_batches').insert({
+      school_id: STATE.currentSchoolId,
+      label: (IMPORT.sheetName||'Import')+' — '+new Date().toLocaleString(),
+      session_count: toInsert.length,
+      created_class_ids: newClassIds,
+      created_year_group_ids: newYearGroupIds,
+    }).select().single();
     if(batchErr){ alert('Could not record import batch (sessions not saved): '+batchErr.message); return; }
-    const tagged = toInsert.map(s=>({...s, import_batch_id: batch.id}));
-    if(!await dbWrite(sb.from('pe_sessions').insert(tagged), 'import sessions')) return;
+    if(toInsert.length){
+      const tagged = toInsert.map(s=>({...s, import_batch_id: batch.id}));
+      if(!await dbWrite(sb.from('pe_sessions').insert(tagged), 'import sessions')) return;
+    }
   }
 
-  alert(`Import complete.\n${toInsert.length} sessions created.\n${skippedDup} skipped (already existed).\n${skippedUnchecked} skipped (unchecked).`);
+  alert(`Import complete.\n${toInsert.length} sessions created.\n${newClassIds.length} new classes created.\n${newYearGroupIds.length} new year groups created.\n${skippedDup} sessions skipped (already existed).\n${skippedUnchecked} sessions skipped (unchecked).`);
   IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null };
   await loadAll();
   goPage('classes');
