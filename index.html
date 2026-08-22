@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v41-teacher-filter -->
+<!-- BUILD: v42-weekly-print-per-teacher -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -2299,15 +2299,26 @@ function renderExport(){
   const m = document.getElementById('main');
   m.appendChild(el(head('08 · Output','Export / print','Print any view, or download the programme as a spreadsheet.')));
 
-  const panel = el(`<div class="panel"><h3>Print</h3>
-    <p class="hint" style="margin-bottom:12px;">Printing is set up for A4 landscape, one week per page, with the sidebar and buttons hidden. Choose a view, then print it.</p>
+  const teacherNames = [...new Set(STATE.sessions.map(s=>s.teacher && s.teacher.trim()).filter(Boolean))].sort((a,b)=>naturalCollator.compare(a,b));
+  const teacherOptions = `<option value="">All teachers</option>` + teacherNames.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  const panel = el(`<div class="panel"><h3>Print this week's schedule</h3>
+    <p class="hint" style="margin-bottom:12px;">Prints Monday–Friday of the current week, on a single A4 page. Pick a teacher for just their classes, or "All teachers" for the whole school.</p>
     <div class="row">
-      <button class="btn" onclick="printView('calendar')">Print programme calendar</button>
-      <button class="btn secondary" onclick="printView('classes')">Print weekly timetable</button>
-      <button class="btn secondary" onclick="printView('workload')">Print teacher workload</button>
+      <div class="field" style="max-width:280px;"><label>Who for</label><select id="printTeacherSelect">${teacherOptions}</select></div>
+      <button class="btn" style="align-self:flex-end;" onclick="printWeeklyTeacherSchedule()">Print</button>
     </div>
   </div>`);
   m.appendChild(panel);
+
+  const otherPrints = el(`<div class="panel"><h3>Other printable views</h3>
+    <div class="row">
+      <button class="btn secondary" onclick="printView('calendar')">Full programme calendar (all weeks)</button>
+      <button class="btn secondary" onclick="printView('classes')">Weekly timetable overview</button>
+      <button class="btn secondary" onclick="printView('workload')">Teacher workload (all teachers)</button>
+    </div>
+    <p class="hint">These print A4 landscape, one week or one page per view.</p>
+  </div>`);
+  m.appendChild(otherPrints);
 
   const dl = el(`<div class="panel"><h3>Download</h3>
     <div class="row">
@@ -2317,6 +2328,81 @@ function renderExport(){
     <p class="hint">The Excel workbook has one sheet per part of your setup — programme, classes &amp; sessions, sports, facilities, periods — so it doubles as a backup of everything in this school.</p>
   </div>`);
   m.appendChild(dl);
+}
+
+function getMondayOfWeek(d){
+  // the "upcoming" teaching week: on a weekday, that's this week (even if
+  // Monday already passed); on a weekend, this week's Mon–Fri is over, so
+  // roll forward to next week's Monday instead.
+  const day = d.getDay(); // 0=Sun..6=Sat
+  const diff = (day===0) ? 1 : (day===6) ? 2 : 1-day;
+  const m = new Date(d);
+  m.setDate(m.getDate()+diff);
+  m.setHours(0,0,0,0);
+  return m;
+}
+
+function printWeeklyTeacherSchedule(){
+  const sel = document.getElementById('printTeacherSelect');
+  const teacher = sel ? sel.value : '';
+
+  const monday = getMondayOfWeek(new Date());
+  const weekDates = [0,1,2,3,4].map(i=>{
+    const d = new Date(monday); d.setDate(d.getDate()+i);
+    return d.toISOString().slice(0,10);
+  });
+
+  let entries = STATE.entries.filter(e=>weekDates.includes(e.date));
+  const withSession = entries.map(e=>{
+    const sess = byId(STATE.sessions, e.session_id);
+    return sess ? {...e, _slot: sess.start_time.slice(0,5)+'–'+sess.end_time.slice(0,5), _teacher: (sess.teacher||'').trim()} : null;
+  }).filter(Boolean);
+  const filtered = teacher ? withSession.filter(e=>e._teacher===teacher) : withSession;
+
+  const slots = [...new Set(filtered.map(e=>e._slot))].sort();
+
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+  const title = teacher ? teacher : 'All teachers';
+  main.appendChild(el(`<div class="print-header" style="display:block;"><b>${esc(STATE.school && STATE.school.name ? STATE.school.name : 'PE Programme')}</b> — ${esc(title)} — week of ${weekDates[0]} to ${weekDates[4]}</div>`));
+
+  const table = el(`<table class="cal" style="width:100%;"><thead><tr><th>Time</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody></tbody></table>`);
+  const tbody = table.querySelector('tbody');
+  if(slots.length===0){
+    tbody.appendChild(el(`<tr><td colspan="6" class="empty">No sessions scheduled this week${teacher?' for '+esc(teacher):''}.</td></tr>`));
+  } else {
+    slots.forEach(slot=>{
+      const cells = weekDates.map(dayDate=>{
+        const matches = filtered.filter(e=>e.date===dayDate && e._slot===slot);
+        if(matches.length===0) return `<td></td>`;
+        const inner = matches.map(e=>{
+          const cls = byId(STATE.classes, e.class_id);
+          const sp = byId(STATE.sports, e.sport_id);
+          const fac = byId(STATE.facilities, e.facility_id);
+          return `<div class="sport">${cls?esc(cls.name):'?'}${(!teacher && e._teacher) ? ' — '+esc(e._teacher) : ''}</div>
+            <div class="fac">${sp?esc(sp.name):''}${fac?' · '+esc(fac.name):''}</div>`;
+        }).join('<hr style="border:none;border-top:1px dashed var(--line);margin:3px 0;">');
+        return `<td>${inner}</td>`;
+      }).join('');
+      tbody.appendChild(el(`<tr><td class="mono"><b>${slot}</b></td>${cells}</tr>`));
+    });
+  }
+  main.appendChild(table);
+
+  // force a single portrait page for this specific printout, without
+  // permanently changing the landscape @page rule the other views use
+  const override = document.createElement('style');
+  override.id = 'printSizeOverride';
+  override.textContent = '@media print{ @page{ size: A4 portrait; margin: 12mm; } .cal{ font-size:11px; } .cal td{ padding:5px 6px; } }';
+  document.head.appendChild(override);
+
+  setTimeout(()=>{
+    window.print();
+    setTimeout(()=>{
+      override.remove();
+      goPage('export');
+    }, 300);
+  }, 200);
 }
 
 function printView(page){
