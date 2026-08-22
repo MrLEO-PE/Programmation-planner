@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v30-per-term-programme-setup -->
+<!-- BUILD: v32-no-1000-row-limit -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -412,14 +412,14 @@ async function loadAll(){
   const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries, batches, files] = await Promise.all([
     sb.from('year_groups').select('*').eq('school_id', sid),
     sb.from('classes').select('*').eq('school_id', sid),
-    sb.from('pe_sessions').select('*').eq('school_id', sid),
+    fetchAllRows(()=>sb.from('pe_sessions').select('*').eq('school_id', sid)),
     sb.from('sports').select('*').eq('school_id', sid),
     sb.from('facilities').select('*').eq('school_id', sid),
     sb.from('sport_facilities').select('*').eq('school_id', sid),
     sb.from('periods').select('*').eq('school_id', sid),
     sb.from('unavailable_dates').select('*').eq('school_id', sid).order('date'),
     sb.from('year_group_sports').select('*').eq('school_id', sid),
-    sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
+    fetchAllRows(()=>sb.from('programme_entries').select('*').eq('school_id', sid).order('date')),
     sb.from('import_batches').select('*').eq('school_id', sid).order('created_at', {ascending:false}),
     sb.from('uploaded_files').select('*').eq('school_id', sid).order('uploaded_at', {ascending:false}),
   ]);
@@ -516,6 +516,24 @@ function head(eyebrow,title,sub){
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild || t.content.firstChild; }
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
+
+/* Supabase caps a single select at 1000 rows. Programme entries easily
+   exceed that over a full term, so page through until everything is loaded
+   — otherwise the app silently works with a partial picture. */
+async function fetchAllRows(buildQuery){
+  const PAGE = 1000;
+  let from = 0;
+  const all = [];
+  for(;;){
+    const {data, error} = await buildQuery().range(from, from+PAGE-1);
+    if(error) return {data:null, error};
+    all.push(...(data||[]));
+    if(!data || data.length < PAGE) break;
+    from += PAGE;
+    if(from > 100000) break; // hard safety stop
+  }
+  return {data: all, error: null};
+}
 
 function showLoading(msg){
   document.getElementById('globalOverlayMsg').textContent = msg || 'Working…';
@@ -1542,15 +1560,46 @@ function renderProgrammeSetup(){
   }
 
   STATE.yearGroups.forEach(yg=>{
-    const chosen = STATE.ygSports.filter(l=>l.year_group_id===yg.id && l.period_id===pid).map(l=>l.sport_id);
-    const panel = el(`<div class="panel"><h3>${esc(yg.name)}</h3><div class="select-multi" id="yg_${yg.id}"></div></div>`);
+    const links = STATE.ygSports.filter(l=>l.year_group_id===yg.id && l.period_id===pid);
+    const chosen = links.map(l=>l.sport_id);
+    const totalWeeks = links.reduce((sum,l)=>sum+(l.weeks||4),0);
+    const panel = el(`<div class="panel"><h3>${esc(yg.name)}</h3>
+      <div class="select-multi" id="yg_${yg.id}"></div>
+      <div id="wk_${yg.id}" style="margin-top:14px;"></div>
+    </div>`);
     const box = panel.querySelector(`#yg_${yg.id}`);
     STATE.sports.forEach(sp=>{
       const on = chosen.includes(sp.id);
       box.appendChild(el(`<button type="button" class="chip ${on?'on':''}" onclick="toggleYgSport('${yg.id}','${sp.id}',this)">${esc(sp.name)}</button>`));
     });
+    const wkBox = panel.querySelector(`#wk_${yg.id}`);
+    if(links.length){
+      const tbl = el(`<table><thead><tr><th>Sport</th><th style="width:150px;">Weeks (1–15)</th></tr></thead><tbody></tbody></table>`);
+      const tbody = tbl.querySelector('tbody');
+      links.forEach(l=>{
+        const sp = byId(STATE.sports, l.sport_id);
+        tbody.appendChild(el(`<tr>
+          <td>${sp?esc(sp.name):'?'}</td>
+          <td><input type="number" min="1" max="15" value="${l.weeks||4}" style="width:90px;"
+              onchange="setSportWeeks('${l.id}', this.value, this)"></td>
+        </tr>`));
+      });
+      wkBox.appendChild(tbl);
+      wkBox.appendChild(el(`<p class="hint">Total programmed: <b>${totalWeeks} week${totalWeeks===1?'':'s'}</b>. Each sport runs as a block for its number of weeks, then the year group moves to the next one. Groups sharing a time slot are offset so they're on different sports at the same moment (which keeps facilities free), and the sequence repeats if the term runs longer than the total.</p>`));
+    } else {
+      wkBox.appendChild(el(`<p class="hint">Pick one or more sports above to set how many weeks each one runs.</p>`));
+    }
     m.appendChild(panel);
   });
+}
+async function setSportWeeks(linkId, value, input){
+  let weeks = parseInt(value,10);
+  if(isNaN(weeks) || weeks<1) weeks = 1;
+  if(weeks>15) weeks = 15;
+  input.value = weeks;
+  if(!await dbWrite(sb.from('year_group_sports').update({weeks}).eq('id', linkId), 'set sport weeks')) return;
+  await loadAll();
+  render();
 }
 async function switchSetupPeriod(pid){
   STATE._setupPeriodId = pid;
@@ -1659,7 +1708,14 @@ async function runGenerator(){
   const keepManual = STATE.entries.filter(e=>e.period_id===periodId && e.status==='manual');
   const toDelete = STATE.entries.filter(e=>e.period_id===periodId && e.status!=='manual');
   if(toDelete.length){
-    if(!await dbWrite(sb.from('programme_entries').delete().in('id', toDelete.map(e=>e.id)), 'clear old entries')) return;
+    // delete by filter, not by ID list, so nothing beyond the loaded page is missed
+    if(!await dbWrite(
+      sb.from('programme_entries').delete()
+        .eq('school_id', STATE.currentSchoolId)
+        .eq('period_id', periodId)
+        .neq('status', 'manual'),
+      'clear old entries'
+    )) return;
   }
 
   // facility occupancy map: `${date}|${startTime}` -> Set(facility_id)
@@ -1681,32 +1737,56 @@ async function runGenerator(){
     if(sess && e.facility_id) markOccupied(e.date, sess.start_time, sess.end_time, e.facility_id);
   });
 
-  // round-robin sport index per year group to balance sports over time,
-  // but skip straight past any candidate that has zero free facilities
-  // right now — so two different groups needing the same slot don't both
-  // land on the one sport whose facilities are already taken.
-  const ygSportIndex = {};
-  function pickSportForSlot(ygId, date, sess){
-    // sports selected for this year group *in the term being generated*;
-    // falls back to any selections made before terms existed
-    let options = STATE.ygSports.filter(l=>l.year_group_id===ygId && l.period_id===periodId).map(l=>l.sport_id);
-    if(options.length===0){
-      options = STATE.ygSports.filter(l=>l.year_group_id===ygId && !l.period_id).map(l=>l.sport_id);
+  // Sports run as multi-week blocks (set per year group, per term, on the
+  // Programme setup page). Classes that share a time slot are offset in the
+  // rotation so they're on different sports at the same moment — which is
+  // what keeps facilities free (e.g. two groups on Football's two fields
+  // while two others are on Athletics' two tracks).
+  function sportLinksFor(ygId){
+    let links = STATE.ygSports.filter(l=>l.year_group_id===ygId && l.period_id===periodId);
+    if(links.length===0){
+      links = STATE.ygSports.filter(l=>l.year_group_id===ygId && !l.period_id);
     }
-    if(options.length===0) return null;
-    const startIndex = ygSportIndex[ygId] || 0;
-    for(let attempt=0; attempt<options.length; attempt++){
-      const idx = (startIndex+attempt) % options.length;
-      const sportId = options[idx];
+    return links;
+  }
+
+  // stable offset per class, so sibling/simultaneous groups differ
+  const classOffset = {};
+  STATE.yearGroups.forEach(yg=>{
+    const inYg = STATE.classes.filter(c=>c.year_group_id===yg.id);
+    inYg.forEach((c,i)=>{ classOffset[c.id] = i; });
+  });
+
+  const periodStart = new Date(period.start_date+'T00:00:00');
+  function weekIndexOf(dateStr){
+    const d = new Date(dateStr+'T00:00:00');
+    return Math.floor((d - periodStart) / (7*24*60*60*1000));
+  }
+
+  function pickSportForSlot(ygId, date, sess, cls){
+    const links = sportLinksFor(ygId);
+    if(links.length===0) return null;
+    // rotate this class's sport order by its offset so simultaneous groups differ
+    const off = (classOffset[cls.id] || 0) % links.length;
+    const rotated = links.slice(off).concat(links.slice(0, off));
+    // expand into a week-by-week sequence: each sport repeated for its weeks
+    const weekSeq = [];
+    rotated.forEach(l=>{
+      const w = Math.max(1, Math.min(15, l.weeks || 4));
+      for(let i=0;i<w;i++) weekSeq.push(l.sport_id);
+    });
+    const wi = Math.max(0, weekIndexOf(date));
+    const scheduled = weekSeq[wi % weekSeq.length];
+
+    // prefer the scheduled sport; only if none of its facilities are free
+    // do we look at the year group's other sports, so a class still gets a
+    // usable session rather than an empty conflict
+    const tryOrder = [scheduled, ...rotated.map(l=>l.sport_id).filter(id=>id!==scheduled)];
+    for(const sportId of tryOrder){
       const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
-      const hasFree = facOptions.some(facId=>isFree(date, sess.start_time, sess.end_time, facId));
-      if(hasFree){ ygSportIndex[ygId] = idx+1; return sportId; }
+      if(facOptions.some(facId=>isFree(date, sess.start_time, sess.end_time, facId))) return sportId;
     }
-    // nothing free for any option at this slot — fall back to the plain
-    // round-robin pick; this will end up as a conflict, same as before.
-    const fallback = options[startIndex % options.length];
-    ygSportIndex[ygId] = startIndex+1;
-    return fallback;
+    return scheduled; // nothing free anywhere — will be flagged as a conflict
   }
 
   const newEntries = [];
@@ -1728,7 +1808,7 @@ async function runGenerator(){
         // e.g. two groups fill Field 1 & 2 for Football, the next two
         // fall through to Track 1 & 2 for Athletics — instead of all
         // four fighting over one sport's facilities.
-        const sportId = pickSportForSlot(ygId, date, sess);
+        const sportId = pickSportForSlot(ygId, date, sess, cls);
         if(!sportId){ continue; }
         const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
         let chosenFacility = null;
@@ -1761,15 +1841,17 @@ async function runGenerator(){
 }
 
 async function clearGenerated(){
-  const gen = STATE.entries.filter(e=>e.status==='generated' || e.status==='conflict');
-  if(gen.length===0){ alert('Nothing to clear — there are no generated or conflict entries right now.'); return; }
-  if(!confirm(`Remove ${gen.length} generated/conflict entries? Manual changes are kept.`)) return;
-  showLoading('Clearing '+gen.length+' entries…');
-  // delete in batches — a single request with hundreds of IDs can exceed URL/request size limits
-  for(let i=0;i<gen.length;i+=100){
-    const batch = gen.slice(i,i+100).map(e=>e.id);
-    if(!await dbWrite(sb.from('programme_entries').delete().in('id', batch), 'clear generated entries')){ hideLoading(); return; }
-  }
+  if(!confirm(`Remove ALL generated and conflict entries for this school? Manual changes are kept.`)) return;
+  showLoading('Clearing generated entries…');
+  // Delete by filter rather than by ID list — the app only ever holds the
+  // first page of rows in memory, so an ID-based delete would silently miss
+  // anything beyond that. This removes every matching row in one request.
+  if(!await dbWrite(
+    sb.from('programme_entries').delete()
+      .eq('school_id', STATE.currentSchoolId)
+      .in('status', ['generated','conflict']),
+    'clear generated entries'
+  )){ hideLoading(); return; }
   await loadAll(); render();
   hideLoading();
 }
