@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v35-start-first-sport -->
+<!-- BUILD: v36-strict-starter-block -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1635,9 +1635,30 @@ function renderProgrammeSetup(){
       }
       const starter = links.find(l=>l.start_first);
       const starterName = starter ? (byId(STATE.sports, starter.sport_id)?.name || '?') : null;
+
+      // capacity check: during a starter block every group does that sport at
+      // the same time, so it needs at least as many facilities as there are
+      // classes sharing any one time slot
+      let capacityWarning = '';
+      if(starter){
+        const facCount = STATE.sportFacilities.filter(l=>l.sport_id===starter.sport_id).length;
+        const clsInYg = STATE.classes.filter(c=>c.year_group_id===yg.id);
+        const slotCounts = {};
+        clsInYg.forEach(c=>{
+          STATE.sessions.filter(s=>s.class_id===c.id).forEach(s=>{
+            const k = s.day_of_week+'|'+s.start_time+'|'+s.end_time;
+            slotCounts[k] = (slotCounts[k]||0)+1;
+          });
+        });
+        const peak = Object.values(slotCounts).reduce((a,b)=>Math.max(a,b), 0);
+        if(peak > facCount){
+          capacityWarning = `<br><span class="tag clay">Capacity problem: up to ${peak} group${peak===1?'':'s'} of this year group share a time slot, but ${esc(starterName)} has only ${facCount} facilit${facCount===1?'y':'ies'} — ${peak-facCount} group${(peak-facCount)===1?'':'s'} will show as a conflict during the starting block. Link more facilities to ${esc(starterName)} on page 02, or shorten/remove the starting block.</span>`;
+        }
+      }
+
       wkBox.appendChild(el(`<p class="hint">Allocated <b>${totalWeeks}</b> of <b>${termWeeks}</b> teaching weeks. ${status}<br>
         ${starterName
-          ? `<b>${esc(starterName)}</b> is set to start the term: every group does it together for its ${starter.weeks||4} week${(starter.weeks||4)===1?'':'s'}, then the remaining sports rotate with groups offset so they're on different sports at the same moment.`
+          ? `<b>${esc(starterName)}</b> is set to start the term: every group does it together for its ${starter.weeks||4} week${(starter.weeks||4)===1?'':'s'}, then the remaining sports rotate with groups offset so they're on different sports at the same moment. During the starting block the sport is fixed — groups without a free facility are flagged as conflicts rather than moved to another sport.${capacityWarning}`
           : `Each sport runs as a block for its number of weeks, then the year group moves to the next. Groups sharing a time slot are offset so they're on different sports at the same moment, which keeps facilities free.`}
         </p>`));
     } else {
@@ -1895,7 +1916,13 @@ async function runGenerator(){
 
     // prefer the scheduled sport; only if none of its facilities are free
     // do we look at the year group's other sports, so a class still gets a
-    // usable session rather than an empty conflict
+    // usable session rather than an empty conflict.
+    // EXCEPTION: during a "start the term with this" block the sport is not
+    // negotiable — if there aren't enough facilities for every group, that
+    // must surface as a visible conflict rather than a silent substitution.
+    const inStarterBlock = starter && wi < starterWeeks;
+    if(inStarterBlock) return scheduled;
+
     const allIds = links.map(l=>l.sport_id);
     const tryOrder = [scheduled, ...allIds.filter(id=>id!==scheduled)];
     for(const sportId of tryOrder){
