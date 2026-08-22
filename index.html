@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v20-distinct-class-split -->
+<!-- BUILD: v22-persistent-file-storage -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -210,7 +210,7 @@ let STATE = {
   yearGroups: [], classes: [], sessions: [],
   sports: [], facilities: [], sportFacilities: [],
   periods: [], unavailable: [], ygSports: [],
-  entries: [], importBatches: []
+  entries: [], importBatches: [], uploadedFiles: []
 };
 let currentPage = 'dashboard';
 let currentPeriodFilter = null;
@@ -395,11 +395,11 @@ async function loadAll(){
   STATE.school = STATE.schools.find(s=>s.id===sid) || {id:sid, name:''};
   if(!sid){
     STATE.yearGroups=[]; STATE.classes=[]; STATE.sessions=[]; STATE.sports=[]; STATE.facilities=[];
-    STATE.sportFacilities=[]; STATE.periods=[]; STATE.unavailable=[]; STATE.ygSports=[]; STATE.entries=[]; STATE.importBatches=[];
+    STATE.sportFacilities=[]; STATE.periods=[]; STATE.unavailable=[]; STATE.ygSports=[]; STATE.entries=[]; STATE.importBatches=[]; STATE.uploadedFiles=[];
     renderSchoolSwitcher();
     return;
   }
-  const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries, batches] = await Promise.all([
+  const [yg, cls, sess, sports, fac, sf, per, unav, ygs, entries, batches, files] = await Promise.all([
     sb.from('year_groups').select('*').eq('school_id', sid),
     sb.from('classes').select('*').eq('school_id', sid),
     sb.from('pe_sessions').select('*').eq('school_id', sid),
@@ -411,8 +411,9 @@ async function loadAll(){
     sb.from('year_group_sports').select('*').eq('school_id', sid),
     sb.from('programme_entries').select('*').eq('school_id', sid).order('date'),
     sb.from('import_batches').select('*').eq('school_id', sid).order('created_at', {ascending:false}),
+    sb.from('uploaded_files').select('*').eq('school_id', sid).order('uploaded_at', {ascending:false}),
   ]);
-  const results = {year_groups:yg, classes:cls, pe_sessions:sess, sports:sports, facilities:fac, sport_facilities:sf, periods:per, unavailable_dates:unav, year_group_sports:ygs, programme_entries:entries, import_batches:batches};
+  const results = {year_groups:yg, classes:cls, pe_sessions:sess, sports:sports, facilities:fac, sport_facilities:sf, periods:per, unavailable_dates:unav, year_group_sports:ygs, programme_entries:entries, import_batches:batches, uploaded_files:files};
   const failed = Object.entries(results).filter(([k,v])=>v.error);
   if(failed.length){
     console.error('loadAll: some queries failed', failed);
@@ -431,6 +432,7 @@ async function loadAll(){
   if(!ygs.error) STATE.ygSports = ygs.data || [];
   if(!entries.error) STATE.entries = entries.data || [];
   if(!batches.error) STATE.importBatches = batches.data || [];
+  if(!files.error) STATE.uploadedFiles = files.data || [];
   renderSchoolSwitcher();
 }
 
@@ -580,9 +582,26 @@ function renderImport(){
 
   const uploadPanel = el(`<div class="panel"><h3>1. Upload file</h3>
     <input type="file" id="importFile" accept=".xlsx,.xls,.csv" onchange="handleImportFile(this)">
-    <p class="hint">Expected layout: a grid with days as column headers, a period/time column on the left, and each PE session written as class name on one line and teacher(s) on the next line within the same cell. Nothing is saved to your school until you review and click Import at the bottom.</p>
+    <p class="hint">Expected layout: a grid with days as column headers, a period/time column on the left, and each PE session written as class name on one line and teacher(s) on the next line within the same cell. Nothing is saved to your school until you review and click Import at the bottom. Every file you upload here is saved so you can reopen it later and try different options below without uploading it again.</p>
   </div>`);
   m.appendChild(uploadPanel);
+
+  if(STATE.uploadedFiles.length){
+    const filesPanel = el(`<div class="panel"><h3>Previously uploaded files</h3>
+      <table><thead><tr><th>File</th><th>Uploaded</th><th></th></tr></thead><tbody id="uploadedFilesBody"></tbody></table></div>`);
+    m.appendChild(filesPanel);
+    const fbody = filesPanel.querySelector('#uploadedFilesBody');
+    STATE.uploadedFiles.forEach(f=>{
+      fbody.appendChild(el(`<tr>
+        <td>${esc(f.filename)}</td>
+        <td class="mono">${new Date(f.uploaded_at).toLocaleString()}</td>
+        <td>
+          <button class="btn small secondary" onclick="loadStoredFile('${f.id}')">Open &amp; adjust options</button>
+          <button class="btn small danger" onclick="deleteStoredFile('${f.id}')">Remove</button>
+        </td>
+      </tr>`));
+    });
+  }
 
   const optionsPanel = el(`<div class="panel"><h3>Splitting rules</h3>
     <p class="hint">These control how a cell with more than one teacher name gets split into separate classes. Turn off whichever doesn't match how your school's timetable works — cells that would have split just import as one combined class with all teachers listed instead.</p>
@@ -652,6 +671,16 @@ function renderImport(){
   });
 
   const tblPanel = el(`<div class="panel"><h3>3. Review sessions (${IMPORT.rows.length} found)</h3>
+    ${STATE.importBatches.length ? `
+    <div class="field" style="max-width:420px;margin-bottom:14px;">
+      <label>Replace a previous import? (optional)</label>
+      <select id="importReplaceSelect">
+        <option value="">— Add as a new import, keep everything else —</option>
+        ${STATE.importBatches.map(b=>`<option value="${b.id}">${esc(b.label)} (${b.session_count} sessions)</option>`).join('')}
+      </select>
+    </div>
+    <p class="hint" style="margin-bottom:14px;">Choosing a previous import here removes exactly what that import created (same rule as Undo — never touches anything used elsewhere) before adding this new parse. Use this when you've re-uploaded the same file with different splitting options above.</p>
+    ` : ''}
     <table><thead><tr><th></th><th>Day</th><th>Start</th><th>End</th><th>Class</th><th>Teacher</th></tr></thead><tbody id="importRowsBody"></tbody></table>
     <button class="btn" style="margin-top:14px;" onclick="commitImport()">Import these sessions</button>
   </div>`);
@@ -694,10 +723,11 @@ function handleImportFile(input){
   const file = input.files[0];
   if(!file) return;
   const reader = new FileReader();
-  reader.onload = (e)=>{
+  reader.onload = async (e)=>{
+    let bytes;
     try{
-      const data = new Uint8Array(e.target.result);
-      const wb = XLSX.read(data, {type:'array', cellText:true});
+      bytes = new Uint8Array(e.target.result);
+      const wb = XLSX.read(bytes, {type:'array', cellText:true});
       IMPORT.workbook = wb;
       IMPORT.sheetName = wb.SheetNames[0];
       parseCurrentSheet();
@@ -706,8 +736,51 @@ function handleImportFile(input){
       IMPORT.rows = [];
     }
     render();
+    // save a copy to Storage in the background so it can be reopened later
+    // without re-picking it from disk — failure here doesn't block the
+    // preview/import flow above, it's just persistence for next time.
+    if(bytes){
+      const path = STATE.currentSchoolId + '/' + Date.now() + '_' + file.name;
+      const {error: upErr} = await sb.storage.from('timetable-uploads').upload(path, bytes, {contentType: file.type || 'application/octet-stream'});
+      if(upErr){
+        console.error('Could not save file for later reuse:', upErr);
+      } else {
+        const {error: metaErr} = await sb.from('uploaded_files').insert({school_id: STATE.currentSchoolId, filename: file.name, storage_path: path});
+        if(metaErr) console.error('Could not record uploaded file:', metaErr);
+        else await loadAll();
+      }
+      render();
+    }
   };
   reader.readAsArrayBuffer(file);
+}
+
+async function loadStoredFile(fileId){
+  const rec = STATE.uploadedFiles.find(f=>f.id===fileId);
+  if(!rec) return;
+  const {data, error} = await sb.storage.from('timetable-uploads').download(rec.storage_path);
+  if(error){ alert('Could not load that file: '+error.message); return; }
+  try{
+    const buf = await data.arrayBuffer();
+    const wb = XLSX.read(new Uint8Array(buf), {type:'array', cellText:true});
+    IMPORT.workbook = wb;
+    IMPORT.sheetName = wb.SheetNames[0];
+    parseCurrentSheet();
+  }catch(err){
+    IMPORT.parseInfo = {error: err.message};
+    IMPORT.rows = [];
+  }
+  render();
+}
+
+async function deleteStoredFile(fileId){
+  const rec = STATE.uploadedFiles.find(f=>f.id===fileId);
+  if(!rec) return;
+  if(!confirm(`Remove "${rec.filename}" from saved uploads? This only deletes the stored file — any classes/sessions already imported from it are not affected.`)) return;
+  await sb.storage.from('timetable-uploads').remove([rec.storage_path]);
+  if(!await dbWrite(sb.from('uploaded_files').delete().eq('id', fileId), 'delete stored file')) return;
+  await loadAll();
+  render();
 }
 
 function parseCurrentSheet(){
@@ -879,13 +952,12 @@ function parseTimetableSheet(sheet, options){
   return {rows, headerRow, periodCol, timeCol, dayCols};
 }
 
-async function undoImportBatch(batchId){
+async function performUndoBatch(batchId){
   const batch = STATE.importBatches.find(b=>b.id===batchId);
-  if(!batch){ alert('Could not find that import batch.'); return; }
-  if(!confirm(`Undo this import? This removes:\n- ${batch.session_count} session(s) it created\n- any class or year group it created, but ONLY if nothing else has used them since\n\nClasses/year groups that already existed before this import, or that you've added other sessions to since, are left untouched.`)) return;
+  if(!batch) return {ok:false, error:'Could not find that import batch.'};
 
   // 1. delete this import's sessions first
-  if(!await dbWrite(sb.from('pe_sessions').delete().eq('import_batch_id', batchId), 'undo import (sessions)')) return;
+  if(!await dbWrite(sb.from('pe_sessions').delete().eq('import_batch_id', batchId), 'undo import (sessions)')) return {ok:false};
 
   // 2. delete classes this import created, but only if no OTHER session
   //    (outside this batch) still references them
@@ -911,16 +983,37 @@ async function undoImportBatch(batchId){
     ygsDeleted++;
   }
 
-  if(!await dbWrite(sb.from('import_batches').delete().eq('id', batchId), 'undo import (batch record)')) return;
+  if(!await dbWrite(sb.from('import_batches').delete().eq('id', batchId), 'undo import (batch record)')) return {ok:false};
+
+  return {ok:true, classesDeleted, classesKept, ygsDeleted, ygsKept};
+}
+
+async function undoImportBatch(batchId){
+  const batch = STATE.importBatches.find(b=>b.id===batchId);
+  if(!batch){ alert('Could not find that import batch.'); return; }
+  if(!confirm(`Undo this import? This removes:\n- ${batch.session_count} session(s) it created\n- any class or year group it created, but ONLY if nothing else has used them since\n\nClasses/year groups that already existed before this import, or that you've added other sessions to since, are left untouched.`)) return;
+
+  const result = await performUndoBatch(batchId);
+  if(!result.ok){ if(result.error) alert(result.error); return; }
 
   await loadAll();
   render();
-  if(classesKept>0 || ygsKept>0){
-    alert(`Undo complete, with some things kept because they're now used elsewhere:\n${classesDeleted} class(es) removed, ${classesKept} kept.\n${ygsDeleted} year group(s) removed, ${ygsKept} kept.`);
+  if(result.classesKept>0 || result.ygsKept>0){
+    alert(`Undo complete, with some things kept because they're now used elsewhere:\n${result.classesDeleted} class(es) removed, ${result.classesKept} kept.\n${result.ygsDeleted} year group(s) removed, ${result.ygsKept} kept.`);
   }
 }
 
 async function commitImport(){
+  const replaceSelect = document.getElementById('importReplaceSelect');
+  const replaceBatchId = replaceSelect ? replaceSelect.value : '';
+  if(replaceBatchId){
+    const batch = STATE.importBatches.find(b=>b.id===replaceBatchId);
+    if(!confirm(`This will first remove everything from "${batch?batch.label:'that import'}" (same safe rule as Undo — only removes what's unused elsewhere), then add this new import. Continue?`)) return;
+    const undoResult = await performUndoBatch(replaceBatchId);
+    if(!undoResult.ok){ if(undoResult.error) alert(undoResult.error); return; }
+    await loadAll(); // refresh STATE.classes/yearGroups/sessions before creating new ones below
+  }
+
   const ygSelections = {};
   IMPORT.uniqueClasses.forEach(cname=>{
     ygSelections[cname] = document.getElementById('ygmap_'+cssSafe(cname)).value;
@@ -933,7 +1026,8 @@ async function commitImport(){
   const yearGroupIdFor = {};
   for(const cname of IMPORT.uniqueClasses){
     const sel = ygSelections[cname];
-    if(sel && sel!=='__new__'){
+    const selStillValid = sel && sel!=='__new__' && STATE.yearGroups.some(yg=>yg.id===sel);
+    if(selStillValid){
       yearGroupIdFor[cname] = sel;
     } else {
       const m = cname.match(/^Y?\s*(\d{1,2})/i);
