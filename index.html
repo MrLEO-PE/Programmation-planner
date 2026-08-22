@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v33-auto-term-weeks -->
+<!-- BUILD: v34-fix-termweeks-order -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1571,6 +1571,10 @@ function renderProgrammeSetup(){
   if(!STATE._setupPeriodId || !STATE.periods.some(p=>p.id===STATE._setupPeriodId)){
     STATE._setupPeriodId = STATE.periods[0].id;
   }
+  const pid = STATE._setupPeriodId;
+  const currentPeriod = byId(STATE.periods, pid);
+  const termWeeks = weeksInPeriod(currentPeriod);
+
   const selPanel = el(`<div class="panel"><h3>Term</h3>
     <div class="row">
       <div class="field" style="max-width:360px;"><label>Setting up sports for</label>
@@ -1583,9 +1587,6 @@ function renderProgrammeSetup(){
   </div>`);
   m.appendChild(selPanel);
 
-  const pid = STATE._setupPeriodId;
-  const currentPeriod = byId(STATE.periods, pid);
-  const termWeeks = weeksInPeriod(currentPeriod);
   const legacy = STATE.ygSports.filter(l=>!l.period_id);
   if(legacy.length){
     m.appendChild(el(`<div class="conflict-box" style="border-color:var(--gold);background:#fdf1de;color:var(--gold);">
