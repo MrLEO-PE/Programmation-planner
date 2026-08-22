@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v38-editable-rescue-choice -->
+<!-- BUILD: v39-teacher-in-calendar -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1321,6 +1321,14 @@ function renderClasses(){
 
   m.appendChild(renderWeeklyTimetableGrid());
 
+  const noTeacher = STATE.sessions.filter(s=>!s.teacher || !s.teacher.trim());
+  if(noTeacher.length){
+    const names = [...new Set(noTeacher.map(s=>{ const c=byId(STATE.classes,s.class_id); return c?c.name:'?'; }))];
+    m.appendChild(el(`<div class="conflict-box" style="border-color:var(--gold);background:#fdf1de;color:var(--gold);">
+      <b>${noTeacher.length} session${noTeacher.length===1?'':'s'} without a teacher</b>
+      Affected classes: ${esc(names.join(', '))}. Add the teacher in the session row below, or re-import the timetable with teacher names included.</div>`));
+  }
+
   // Year groups panel
   const ygPanel = el(`<div class="panel"><h3>Year groups</h3>
     <div class="row" style="margin-bottom:12px;">
@@ -1355,7 +1363,7 @@ function renderClasses(){
   STATE.classes.forEach(c=>{
     const yg = byId(STATE.yearGroups, c.year_group_id);
     const sessions = STATE.sessions.filter(s=>s.class_id===c.id).sort((a,b)=>a.day_of_week-b.day_of_week || a.start_time.localeCompare(b.start_time));
-    const sessHtml = sessions.map(s=>`<span class="pill">${DAYS[s.day_of_week].slice(0,3)} ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}${s.teacher?' · '+esc(s.teacher):''} <button onclick="deleteRow('pe_sessions','${s.id}')">✕</button></span>`).join('') || '<span class="hint">none</span>';
+    const sessHtml = sessions.map(s=>`<span class="pill" style="${s.teacher?'':'background:#fdf1de;color:var(--gold);'}">${DAYS[s.day_of_week].slice(0,3)} ${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)} · <span style="cursor:pointer;text-decoration:underline dotted;" title="Click to set the teacher" onclick="promptSessionTeacher('${s.id}')">${s.teacher?esc(s.teacher):'set teacher'}</span> <button onclick="deleteRow('pe_sessions','${s.id}')">✕</button></span>`).join('') || '<span class="hint">none</span>';
     clsBody.appendChild(el(`<tr>
       <td><b>${esc(c.name)}</b></td>
       <td>${yg?esc(yg.name):'<span class="hint">—</span>'}</td>
@@ -1386,6 +1394,18 @@ async function addClass(){
   if(!await dbWrite(sb.from('classes').insert({school_id: STATE.currentSchoolId, name, year_group_id: ygId}), 'add class')) return;
   await loadAll(); render();
 }
+async function promptSessionTeacher(sessionId){
+  const s = byId(STATE.sessions, sessionId);
+  if(!s) return;
+  const name = prompt('Teacher for this session:', s.teacher || '');
+  if(name===null) return;
+  const teacher = name.trim() || null;
+  showLoading('Saving teacher…');
+  if(!await dbWrite(sb.from('pe_sessions').update({teacher}).eq('id', sessionId), 'set session teacher')){ hideLoading(); return; }
+  await loadAll(); render();
+  hideLoading();
+}
+
 async function deleteAllClasses(){
   const count = STATE.classes.length;
   if(count===0) return;
@@ -2142,6 +2162,8 @@ function renderCalendar(){
           const cls = byId(STATE.classes, e.class_id);
           const sp = byId(STATE.sports, e.sport_id);
           const fac = byId(STATE.facilities, e.facility_id);
+          const sessRec = byId(STATE.sessions, e.session_id);
+          const teacher = sessRec && sessRec.teacher ? sessRec.teacher.trim() : '';
           let rescue = '';
           if(e.status === 'conflict' || e.status === 'manual'){
             const free = freeFacilitiesAt(e);
@@ -2166,8 +2188,8 @@ function renderCalendar(){
             }
           }
           return `<div class="status-${e.status}" style="border-radius:6px;padding:4px 6px;margin-bottom:4px;cursor:pointer;" onclick="editEntry('${e.id}')">
-            <div class="sport">${cls?esc(cls.name):'?'}</div>
-            <div class="fac">${sp?esc(sp.name):'unassigned'}${fac?' · '+esc(fac.name):''}</div>
+            <div class="sport">${cls?esc(cls.name):'?'}${teacher?' — '+esc(teacher):''}</div>
+            <div class="fac">${sp?esc(sp.name):'unassigned'}${fac?' · '+esc(fac.name):''}${teacher?'':' · <span style="opacity:.75">no teacher set</span>'}</div>
             ${rescue}
           </div>`;
         }).join('');
