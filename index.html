@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v25-teacher-workload -->
+<!-- BUILD: v26-sibling-sport-sync -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1626,6 +1626,16 @@ async function runGenerator(){
     return sportId;
   }
 
+  // Classes split by gender from the same original timetable slot (e.g.
+  // "8BC boys" / "8BC girls", or "9BCH boys1" / "9BCH boys2" / "9BCH girls1"
+  // / "9BCH girls2") are siblings that should do the SAME sport at the same
+  // time — just in their own facility — rather than each independently
+  // advancing the rotation and ending up on different sports.
+  function siblingBaseKey(className){
+    return className.replace(/\s+(boys\d*|girls\d*)$/i, '').trim();
+  }
+  const sportPickedForSlot = {}; // key: baseKey|ygId|date|day|start|end -> sportId
+
   const newEntries = [];
   const classes = STATE.classes;
   for(const date of allDates){
@@ -1639,7 +1649,14 @@ async function runGenerator(){
         if(keepManual.some(e=>e.class_id===cls.id && e.session_id===sess.id && e.date===date)) continue;
         const ygId = cls.year_group_id;
         if(!ygId){ continue; }
-        const sportId = nextSport(ygId);
+        const slotKey = siblingBaseKey(cls.name)+'|'+ygId+'|'+date+'|'+dowIdx+'|'+sess.start_time+'|'+sess.end_time;
+        let sportId;
+        if(sportPickedForSlot.hasOwnProperty(slotKey)){
+          sportId = sportPickedForSlot[slotKey];
+        } else {
+          sportId = nextSport(ygId);
+          sportPickedForSlot[slotKey] = sportId;
+        }
         if(!sportId){ continue; }
         const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
         let chosenFacility = null;
