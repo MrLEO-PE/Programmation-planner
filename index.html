@@ -3,10 +3,12 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v44-guaranteed-one-page-fit -->
+<!-- BUILD: v45-real-pdf-download -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
 <style>
 :root{
   --ink:#1c2321;
@@ -2301,13 +2303,14 @@ function renderExport(){
 
   const teacherNames = [...new Set(STATE.sessions.map(s=>s.teacher && s.teacher.trim()).filter(Boolean))].sort((a,b)=>naturalCollator.compare(a,b));
   const teacherOptions = `<option value="">All teachers</option>` + teacherNames.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
-  const panel = el(`<div class="panel"><h3>Print or save this week's schedule</h3>
-    <p class="hint" style="margin-bottom:12px;">Monday–Friday of the upcoming week, on a single A4 landscape page. Pick a teacher for just their classes, or "All teachers" for the whole school.</p>
+  const panel = el(`<div class="panel"><h3>This week's schedule</h3>
+    <p class="hint" style="margin-bottom:12px;">Monday–Friday of the upcoming week. Pick a teacher for just their classes, or "All teachers" for the whole school.</p>
     <div class="row">
       <div class="field" style="max-width:280px;"><label>Who for</label><select id="printTeacherSelect">${teacherOptions}</select></div>
-      <button class="btn" style="align-self:flex-end;" onclick="printWeeklyTeacherSchedule()">Print / Save as PDF</button>
+      <button class="btn" style="align-self:flex-end;" onclick="printWeeklyTeacherSchedule()">Print</button>
+      <button class="btn secondary" style="align-self:flex-end;" onclick="saveWeeklyScheduleAsPDF()">Save as PDF (download)</button>
     </div>
-    <p class="hint" style="margin-top:10px;">To send it to your team instead of printing on paper: in the print dialog that opens, change the destination/printer to <b>"Save as PDF"</b> (every major browser offers this) — that saves a PDF file you can email or share, using the exact same layout as the paper version.</p>
+    <p class="hint" style="margin-top:10px;">"Print" opens your browser's print dialog for a physical printer. "Save as PDF" downloads a PDF file directly — no dialog, no printer needed — ready to email or share with your team. Both are guaranteed to fit on a single A4 landscape page.</p>
   </div>`);
   m.appendChild(panel);
 
@@ -2343,46 +2346,15 @@ function getMondayOfWeek(d){
   return m;
 }
 
-/* Shrinks an element so it's guaranteed to fit within one A4 landscape
-   printed page, by measuring its actual rendered size and scaling down if
-   needed — rather than hoping a fixed small font is always small enough.
-   Pure scale-factor math is in computeFitScale() so it can be unit tested
-   without a real browser layout engine. */
+/* Builds the Monday–Friday schedule table as a detached DOM element
+   (not yet attached to the page), shared by both the Print and the
+   Save-as-PDF paths so their content is always identical. */
 function computeFitScale(contentWidthPx, contentHeightPx, pageWidthPx, pageHeightPx){
   if(contentWidthPx<=0 || contentHeightPx<=0) return 1;
-  const scale = Math.min(pageWidthPx/contentWidthPx, pageHeightPx/contentHeightPx, 1);
-  return scale;
+  return Math.min(pageWidthPx/contentWidthPx, pageHeightPx/contentHeightPx, 1);
 }
 
-function fitToOnePrintedPage(el){
-  // A4 landscape usable area at 10mm margins, in CSS px (96dpi)
-  const MM_TO_PX = 96/25.4;
-  const pageWidthPx = (297-20) * MM_TO_PX;
-  const pageHeightPx = (210-20) * MM_TO_PX;
-
-  el.style.width = pageWidthPx + 'px';
-  el.style.transform = 'none';
-  const rect = el.getBoundingClientRect();
-  const scale = computeFitScale(rect.width, rect.height, pageWidthPx, pageHeightPx);
-
-  if(scale < 1){
-    el.style.transformOrigin = 'top left';
-    el.style.transform = `scale(${scale})`;
-    // compensate width so the scaled box still lines up at the page's left edge
-    el.style.width = (pageWidthPx/scale) + 'px';
-  }
-}
-
-function clearFitToPage(el){
-  el.style.width = '';
-  el.style.transform = '';
-  el.style.transformOrigin = '';
-}
-
-function printWeeklyTeacherSchedule(){
-  const sel = document.getElementById('printTeacherSelect');
-  const teacher = sel ? sel.value : '';
-
+function buildWeeklyScheduleContainer(teacher){
   const monday = getMondayOfWeek(new Date());
   const weekDates = [0,1,2,3,4].map(i=>{
     const d = new Date(monday); d.setDate(d.getDate()+i);
@@ -2395,13 +2367,11 @@ function printWeeklyTeacherSchedule(){
     return sess ? {...e, _slot: sess.start_time.slice(0,5)+'–'+sess.end_time.slice(0,5), _teacher: (sess.teacher||'').trim()} : null;
   }).filter(Boolean);
   const filtered = teacher ? withSession.filter(e=>e._teacher===teacher) : withSession;
-
   const slots = [...new Set(filtered.map(e=>e._slot))].sort();
 
-  const main = document.getElementById('main');
-  main.innerHTML = '';
   const title = teacher ? teacher : 'All teachers';
-  main.appendChild(el(`<div class="print-header" style="display:block;"><b>${esc(STATE.school && STATE.school.name ? STATE.school.name : 'PE Programme')}</b> — ${esc(title)} — week of ${weekDates[0]} to ${weekDates[4]}</div>`));
+  const container = el(`<div></div>`);
+  container.appendChild(el(`<div class="print-header" style="display:block;"><b>${esc(STATE.school && STATE.school.name ? STATE.school.name : 'PE Programme')}</b> — ${esc(title)} — week of ${weekDates[0]} to ${weekDates[4]}</div>`));
 
   const table = el(`<table class="cal" style="width:100%;"><thead><tr><th>Time</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody></tbody></table>`);
   const tbody = table.querySelector('tbody');
@@ -2424,18 +2394,87 @@ function printWeeklyTeacherSchedule(){
       tbody.appendChild(el(`<tr><td class="mono"><b>${slot}</b></td>${cells}</tr>`));
     });
   }
-  main.appendChild(table);
+  container.appendChild(table);
+  return {container, weekDates, title};
+}
+
+function printWeeklyTeacherSchedule(){
+  const sel = document.getElementById('printTeacherSelect');
+  const teacher = sel ? sel.value : '';
+  const {container} = buildWeeklyScheduleContainer(teacher);
+
+  const main = document.getElementById('main');
+  main.innerHTML = '';
+  main.appendChild(container);
 
   setTimeout(()=>{
-    fitToOnePrintedPage(main);
+    // `transform: scale()` does NOT affect how the browser paginates for
+    // print — it only changes painting, not layout — so it can't prevent
+    // page breaks. `zoom` genuinely resizes the layout box, which the
+    // print engine paginates against, so this is what actually works.
+    const MM_TO_PX = 96/25.4;
+    const pageWidthPx = (297-20) * MM_TO_PX;
+    const pageHeightPx = (210-20) * MM_TO_PX;
+    main.style.zoom = '1';
+    const rect = main.getBoundingClientRect();
+    const scale = computeFitScale(rect.width, rect.height, pageWidthPx, pageHeightPx);
+    if(scale < 1) main.style.zoom = String(scale);
+
     window.print();
     setTimeout(()=>{
-      clearFitToPage(main);
+      main.style.zoom = '';
       goPage('export');
     }, 300);
   }, 200);
 }
 
+async function saveWeeklyScheduleAsPDF(){
+  const sel = document.getElementById('printTeacherSelect');
+  const teacher = sel ? sel.value : '';
+  showLoading('Preparing PDF…');
+  try{
+    const {container, title, weekDates} = buildWeeklyScheduleContainer(teacher);
+
+    // render off-screen at a fixed, generous width — html2canvas needs the
+    // element actually in the DOM (display:none won't capture), so it's
+    // positioned far off-screen instead of hidden.
+    container.style.position = 'fixed';
+    container.style.left = '-10000px';
+    container.style.top = '0';
+    container.style.width = '1400px';
+    container.style.background = '#ffffff';
+    container.style.padding = '16px';
+    document.body.appendChild(container);
+
+    const canvas = await html2canvas(container, {scale:2, backgroundColor:'#ffffff'});
+    document.body.removeChild(container);
+
+    const {jsPDF} = window.jspdf;
+    const pdf = new jsPDF({orientation:'landscape', unit:'mm', format:'a4'});
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+    const margin = 8;
+    const maxW = pageWidth - margin*2;
+    const maxH = pageHeight - margin*2;
+    const imgRatio = canvas.width / canvas.height;
+    let drawW = maxW, drawH = maxW/imgRatio;
+    if(drawH > maxH){ drawH = maxH; drawW = maxH*imgRatio; }
+    const x = margin + (maxW-drawW)/2;
+    const y = margin;
+    // a single addImage onto a single-page jsPDF document guarantees one
+    // page — there is no pagination step to go wrong, unlike browser print.
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', x, y, drawW, drawH);
+
+    const schoolPart = (STATE.school && STATE.school.name ? STATE.school.name : 'PE-programme').replace(/[^a-zA-Z0-9]+/g,'-');
+    const whoPart = teacher ? teacher.replace(/[^a-zA-Z0-9]+/g,'-') : 'all-teachers';
+    pdf.save(`${schoolPart}-${whoPart}-${weekDates[0]}.pdf`);
+  }catch(err){
+    console.error('saveWeeklyScheduleAsPDF failed:', err);
+    alert('Could not create the PDF: '+err.message);
+  }finally{
+    hideLoading();
+  }
+}
 function printView(page){
   goPage(page);
   // let the page render before opening the print dialog
