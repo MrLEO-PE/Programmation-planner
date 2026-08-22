@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v37-inline-rescue-facility -->
+<!-- BUILD: v38-editable-rescue-choice -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -2024,6 +2024,19 @@ function freeFacilitiesAt(entry){
   return STATE.facilities.filter(f=>!busy.has(f.id));
 }
 
+async function clearRescueFacility(entryId){
+  const entry = byId(STATE.entries, entryId);
+  if(!entry) return;
+  if(!confirm('Remove this facility choice? The session goes back to being an unresolved conflict.')) return;
+  showLoading('Clearing choice…');
+  if(!await dbWrite(
+    sb.from('programme_entries').update({facility_id: null, status: 'conflict'}).eq('id', entryId),
+    'clear rescue facility'
+  )){ hideLoading(); return; }
+  await loadAll(); render();
+  hideLoading();
+}
+
 async function assignRescueFacility(entryId, facilityId){
   if(!facilityId) return;
   const entry = byId(STATE.entries, entryId);
@@ -2130,21 +2143,26 @@ function renderCalendar(){
           const sp = byId(STATE.sports, e.sport_id);
           const fac = byId(STATE.facilities, e.facility_id);
           let rescue = '';
-          if(e.status === 'conflict'){
+          if(e.status === 'conflict' || e.status === 'manual'){
             const free = freeFacilitiesAt(e);
             const linkedIds = new Set(STATE.sportFacilities.filter(l=>l.sport_id===e.sport_id).map(l=>l.facility_id));
             const linkedFree = free.filter(f=>linkedIds.has(f.id));
             const otherFree = free.filter(f=>!linkedIds.has(f.id));
+            const options = [
+              `<option value="">${e.facility_id ? '— change space —' : '— pick a free space —'}</option>`,
+              linkedFree.length ? `<optgroup label="Normally used for this sport">${linkedFree.map(f=>`<option value="${f.id}" ${f.id===e.facility_id?'selected':''}>${esc(f.name)}</option>`).join('')}</optgroup>` : '',
+              otherFree.length ? `<optgroup label="Free now (one-off rescue)">${otherFree.map(f=>`<option value="${f.id}" ${f.id===e.facility_id?'selected':''}>${esc(f.name)}</option>`).join('')}</optgroup>` : '',
+            ].join('');
             if(free.length){
               rescue = `<select style="width:100%;margin-top:4px;font-size:11px;padding:3px;"
                   onclick="event.stopPropagation()"
-                  onchange="assignRescueFacility('${e.id}', this.value)">
-                <option value="">— pick a free space —</option>
-                ${linkedFree.length ? `<optgroup label="Normally used for this sport">${linkedFree.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')}</optgroup>` : ''}
-                ${otherFree.length ? `<optgroup label="Free now (one-off rescue)">${otherFree.map(f=>`<option value="${f.id}">${esc(f.name)}</option>`).join('')}</optgroup>` : ''}
-              </select>`;
-            } else {
+                  onchange="assignRescueFacility('${e.id}', this.value)">${options}</select>`;
+            } else if(e.status === 'conflict'){
               rescue = `<div style="font-size:11px;margin-top:4px;">Nothing free at this time</div>`;
+            }
+            if(e.status === 'manual' && e.facility_id){
+              rescue += `<button class="btn small secondary" style="margin-top:4px;font-size:10px;padding:2px 8px;"
+                onclick="event.stopPropagation(); clearRescueFacility('${e.id}')">Undo this choice</button>`;
             }
           }
           return `<div class="status-${e.status}" style="border-radius:6px;padding:4px 6px;margin-bottom:4px;cursor:pointer;" onclick="editEntry('${e.id}')">
