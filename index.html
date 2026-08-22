@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v27-batched-clear -->
+<!-- BUILD: v30-per-term-programme-setup -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1507,13 +1507,42 @@ async function addUnavailable(){
    --------------------------------------------------------- */
 function renderProgrammeSetup(){
   const m = document.getElementById('main');
-  m.appendChild(el(head('05 · Planning','Programme setup','Choose which sports should be programmed for each year group.')));
+  m.appendChild(el(head('05 · Planning','Programme setup','Choose which sports each year group does — separately for each term, so the generator uses the right sports and facilities per term.')));
   if(STATE.yearGroups.length===0 || STATE.sports.length===0){
     m.appendChild(el(`<div class="empty">Add at least one year group (page 01) and one sport (page 02) before setting up the programme.</div>`));
     return;
   }
+  if(STATE.periods.length===0){
+    m.appendChild(el(`<div class="empty">Add at least one period/term (page 04) first — the programme is now set up per term.</div>`));
+    return;
+  }
+
+  // which term is being edited
+  if(!STATE._setupPeriodId || !STATE.periods.some(p=>p.id===STATE._setupPeriodId)){
+    STATE._setupPeriodId = STATE.periods[0].id;
+  }
+  const selPanel = el(`<div class="panel"><h3>Term</h3>
+    <div class="row">
+      <div class="field" style="max-width:360px;"><label>Setting up sports for</label>
+        <select id="setupPeriodSelect" onchange="switchSetupPeriod(this.value)">
+          ${STATE.periods.map(p=>`<option value="${p.id}" ${p.id===STATE._setupPeriodId?'selected':''}>${esc(p.name)} (${p.start_date} → ${p.end_date})</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <p class="hint">Each term has its own sport selection. The generator uses whichever term you pick when you run it.</p>
+  </div>`);
+  m.appendChild(selPanel);
+
+  const pid = STATE._setupPeriodId;
+  const legacy = STATE.ygSports.filter(l=>!l.period_id);
+  if(legacy.length){
+    m.appendChild(el(`<div class="conflict-box" style="border-color:var(--gold);background:#fdf1de;color:var(--gold);">
+      <b>${legacy.length} selection(s) from before terms existed</b>
+      These aren't tied to any term. They're still used as a fallback when a term has no selections of its own — tick the sports you want for each term below to replace them.</div>`));
+  }
+
   STATE.yearGroups.forEach(yg=>{
-    const chosen = STATE.ygSports.filter(l=>l.year_group_id===yg.id).map(l=>l.sport_id);
+    const chosen = STATE.ygSports.filter(l=>l.year_group_id===yg.id && l.period_id===pid).map(l=>l.sport_id);
     const panel = el(`<div class="panel"><h3>${esc(yg.name)}</h3><div class="select-multi" id="yg_${yg.id}"></div></div>`);
     const box = panel.querySelector(`#yg_${yg.id}`);
     STATE.sports.forEach(sp=>{
@@ -1523,12 +1552,17 @@ function renderProgrammeSetup(){
     m.appendChild(panel);
   });
 }
+async function switchSetupPeriod(pid){
+  STATE._setupPeriodId = pid;
+  render();
+}
 async function toggleYgSport(ygId, sportId, btn){
-  const existing = STATE.ygSports.find(l=>l.year_group_id===ygId && l.sport_id===sportId);
+  const pid = STATE._setupPeriodId;
+  const existing = STATE.ygSports.find(l=>l.year_group_id===ygId && l.sport_id===sportId && l.period_id===pid);
   if(existing){
     if(!await dbWrite(sb.from('year_group_sports').delete().eq('id', existing.id), 'unlink sport')) return;
   } else {
-    if(!await dbWrite(sb.from('year_group_sports').insert({school_id: STATE.currentSchoolId, year_group_id: ygId, sport_id: sportId}), 'link sport to year group')) return;
+    if(!await dbWrite(sb.from('year_group_sports').insert({school_id: STATE.currentSchoolId, year_group_id: ygId, sport_id: sportId, period_id: pid}), 'link sport to year group')) return;
   }
   await loadAll();
   btn.classList.toggle('on');
@@ -1544,13 +1578,15 @@ function renderGenerator(){
   const perOptions = STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)} (${p.start_date} → ${p.end_date})</option>`).join('');
   const panel = el(`<div class="panel"><h3>Run generator</h3>
     <div class="row">
-      <div class="field"><label>Period</label><select id="genPeriod">${perOptions || '<option value="">Add a period first</option>'}</select></div>
+      <div class="field"><label>Term / period</label><select id="genPeriod" onchange="updateGenSportPreview()">${perOptions || '<option value="">Add a period first</option>'}</select></div>
       <button class="btn" style="align-self:flex-end;" ${STATE.periods.length?'':'disabled'} onclick="runGenerator()">Generate programme</button>
       <button class="btn secondary" style="align-self:flex-end;" onclick="clearGenerated()">Clear generated (keep manual)</button>
     </div>
-    <p class="hint">Existing entries marked "manual" are preserved and never overwritten by regeneration.</p>
+    <div id="genSportPreview" style="margin-top:12px;"></div>
+    <p class="hint">Sports come from Programme setup (page 05) for the term selected above. Existing entries marked "manual" are preserved and never overwritten by regeneration.</p>
   </div>`);
   m.appendChild(panel);
+  updateGenSportPreview();
 
   const conflicts = STATE.entries.filter(e=>e.status==='conflict');
   if(conflicts.length){
@@ -1576,6 +1612,36 @@ function dateRange(start,end){
   const out=[]; let d=new Date(start+'T00:00:00'); const e=new Date(end+'T00:00:00');
   while(d<=e){ out.push(d.toISOString().slice(0,10)); d.setDate(d.getDate()+1); }
   return out;
+}
+
+function updateGenSportPreview(){
+  const box = document.getElementById('genSportPreview');
+  if(!box) return;
+  const sel = document.getElementById('genPeriod');
+  const pid = sel ? sel.value : '';
+  box.innerHTML = '';
+  if(!pid) return;
+  const rows = [];
+  STATE.yearGroups.forEach(yg=>{
+    let links = STATE.ygSports.filter(l=>l.year_group_id===yg.id && l.period_id===pid);
+    let fallback = false;
+    if(links.length===0){
+      links = STATE.ygSports.filter(l=>l.year_group_id===yg.id && !l.period_id);
+      fallback = links.length>0;
+    }
+    const names = links.map(l=>byId(STATE.sports, l.sport_id)?.name).filter(Boolean);
+    rows.push({name: yg.name, names, fallback});
+  });
+  if(rows.length===0) return;
+  const tbl = el(`<table><thead><tr><th>Year group</th><th>Sports this term</th></tr></thead><tbody></tbody></table>`);
+  const tbody = tbl.querySelector('tbody');
+  rows.forEach(r=>{
+    const cell = r.names.length
+      ? esc(r.names.join(', ')) + (r.fallback ? ' <span class="tag clay">not set for this term — using older selection</span>' : '')
+      : '<span class="hint">none selected — this year group will be skipped</span>';
+    tbody.appendChild(el(`<tr><td><b>${esc(r.name)}</b></td><td>${cell}</td></tr>`));
+  });
+  box.appendChild(tbl);
 }
 
 async function runGenerator(){
@@ -1615,26 +1681,33 @@ async function runGenerator(){
     if(sess && e.facility_id) markOccupied(e.date, sess.start_time, sess.end_time, e.facility_id);
   });
 
-  // round-robin sport index per year group to balance sports
+  // round-robin sport index per year group to balance sports over time,
+  // but skip straight past any candidate that has zero free facilities
+  // right now — so two different groups needing the same slot don't both
+  // land on the one sport whose facilities are already taken.
   const ygSportIndex = {};
-  function nextSport(ygId){
-    const options = STATE.ygSports.filter(l=>l.year_group_id===ygId).map(l=>l.sport_id);
+  function pickSportForSlot(ygId, date, sess){
+    // sports selected for this year group *in the term being generated*;
+    // falls back to any selections made before terms existed
+    let options = STATE.ygSports.filter(l=>l.year_group_id===ygId && l.period_id===periodId).map(l=>l.sport_id);
+    if(options.length===0){
+      options = STATE.ygSports.filter(l=>l.year_group_id===ygId && !l.period_id).map(l=>l.sport_id);
+    }
     if(options.length===0) return null;
-    const i = ygSportIndex[ygId] || 0;
-    const sportId = options[i % options.length];
-    ygSportIndex[ygId] = i+1;
-    return sportId;
+    const startIndex = ygSportIndex[ygId] || 0;
+    for(let attempt=0; attempt<options.length; attempt++){
+      const idx = (startIndex+attempt) % options.length;
+      const sportId = options[idx];
+      const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
+      const hasFree = facOptions.some(facId=>isFree(date, sess.start_time, sess.end_time, facId));
+      if(hasFree){ ygSportIndex[ygId] = idx+1; return sportId; }
+    }
+    // nothing free for any option at this slot — fall back to the plain
+    // round-robin pick; this will end up as a conflict, same as before.
+    const fallback = options[startIndex % options.length];
+    ygSportIndex[ygId] = startIndex+1;
+    return fallback;
   }
-
-  // Classes split by gender from the same original timetable slot (e.g.
-  // "8BC boys" / "8BC girls", or "9BCH boys1" / "9BCH boys2" / "9BCH girls1"
-  // / "9BCH girls2") are siblings that should do the SAME sport at the same
-  // time — just in their own facility — rather than each independently
-  // advancing the rotation and ending up on different sports.
-  function siblingBaseKey(className){
-    return className.replace(/\s+(boys\d*|girls\d*)$/i, '').trim();
-  }
-  const sportPickedForSlot = {}; // key: baseKey|ygId|date|day|start|end -> sportId
 
   const newEntries = [];
   const classes = STATE.classes;
@@ -1649,14 +1722,13 @@ async function runGenerator(){
         if(keepManual.some(e=>e.class_id===cls.id && e.session_id===sess.id && e.date===date)) continue;
         const ygId = cls.year_group_id;
         if(!ygId){ continue; }
-        const slotKey = siblingBaseKey(cls.name)+'|'+ygId+'|'+date+'|'+dowIdx+'|'+sess.start_time+'|'+sess.end_time;
-        let sportId;
-        if(sportPickedForSlot.hasOwnProperty(slotKey)){
-          sportId = sportPickedForSlot[slotKey];
-        } else {
-          sportId = nextSport(ygId);
-          sportPickedForSlot[slotKey] = sportId;
-        }
+        // Pick the first sport in the rotation that still has a free
+        // facility at this exact slot. Sibling sub-groups (boys1/boys2/
+        // girls1/girls2) therefore spread across the selected sports —
+        // e.g. two groups fill Field 1 & 2 for Football, the next two
+        // fall through to Track 1 & 2 for Athletics — instead of all
+        // four fighting over one sport's facilities.
+        const sportId = pickSportForSlot(ygId, date, sess);
         if(!sportId){ continue; }
         const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
         let chosenFacility = null;
