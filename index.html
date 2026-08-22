@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v22-persistent-file-storage -->
+<!-- BUILD: v25-teacher-workload -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -126,6 +126,13 @@ tr:last-child td{border-bottom:none;}
 #authMsg.ok{color:var(--court);}
 .loading-screen{min-height:100vh;display:flex;align-items:center;justify-content:center;color:var(--muted);font-family:"IBM Plex Mono",monospace;font-size:13px;}
 
+.global-overlay{position:fixed;inset:0;background:rgba(28,35,33,.72);display:none;align-items:center;justify-content:center;z-index:9999;}
+.global-overlay.show{display:flex;}
+.global-overlay .box{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:26px 34px;display:flex;align-items:center;gap:14px;box-shadow:0 8px 30px rgba(0,0,0,.35);}
+.global-overlay .spinner{width:22px;height:22px;border:3px solid var(--court-dim);border-top-color:var(--court);border-radius:50%;animation:spin .8s linear infinite;flex:none;}
+.global-overlay .msg{font-size:14px;color:var(--ink);}
+@keyframes spin{to{transform:rotate(360deg);}}
+
 .conflict-box{border:1px solid var(--danger);background:var(--danger-dim);border-radius:8px;padding:12px 14px;margin-bottom:14px;color:var(--danger);font-size:13px;}
 .conflict-box b{display:block;margin-bottom:4px;}
 .badge-count{background:var(--clay);color:#fff;border-radius:20px;font-size:10px;padding:1px 6px;margin-left:6px;font-family:"IBM Plex Mono",monospace;}
@@ -142,6 +149,8 @@ tr:last-child td{border-bottom:none;}
 <body>
 
 <div id="loading" class="loading-screen">loading pe programme planner…</div>
+
+<div id="globalOverlay" class="global-overlay"><div class="box"><div class="spinner"></div><div class="msg" id="globalOverlayMsg">Working…</div></div></div>
 
 <!-- ===================== LOGIN ===================== -->
 <div id="loginScreen" class="login-wrap" style="display:none;">
@@ -175,6 +184,7 @@ tr:last-child td{border-bottom:none;}
     <button class="navbtn active" data-page="dashboard" onclick="goPage('dashboard')"><span class="num">00</span>Dashboard</button>
     <button class="navbtn" data-page="classes" onclick="goPage('classes')"><span class="num">01</span>Classes &amp; timetable</button>
     <button class="navbtn" data-page="import" onclick="goPage('import')"><span class="num">01b</span>Import from Excel</button>
+    <button class="navbtn" data-page="workload" onclick="goPage('workload')"><span class="num">01c</span>Teacher workload</button>
     <button class="navbtn" data-page="sports" onclick="goPage('sports')"><span class="num">02</span>Sports</button>
     <button class="navbtn" data-page="facilities" onclick="goPage('facilities')"><span class="num">03</span>Facilities</button>
     <button class="navbtn" data-page="periods" onclick="goPage('periods')"><span class="num">04</span>Periods &amp; dates</button>
@@ -477,6 +487,7 @@ function render(){
     dashboard: renderDashboard,
     classes: renderClasses,
     import: renderImport,
+    workload: renderTeacherWorkload,
     sports: renderSports,
     facilities: renderFacilities,
     periods: renderPeriods,
@@ -505,6 +516,14 @@ function head(eyebrow,title,sub){
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild || t.content.firstChild; }
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
+
+function showLoading(msg){
+  document.getElementById('globalOverlayMsg').textContent = msg || 'Working…';
+  document.getElementById('globalOverlay').classList.add('show');
+}
+function hideLoading(){
+  document.getElementById('globalOverlay').classList.remove('show');
+}
 
 /* Natural sort so "Year 10" comes after "Year 9", not before "Year 7". */
 const naturalCollator = new Intl.Collator(undefined, {numeric:true, sensitivity:'base'});
@@ -722,6 +741,7 @@ async function switchImportSheet(name){
 function handleImportFile(input){
   const file = input.files[0];
   if(!file) return;
+  showLoading('Reading '+file.name+'…');
   const reader = new FileReader();
   reader.onload = async (e)=>{
     let bytes;
@@ -740,6 +760,7 @@ function handleImportFile(input){
     // without re-picking it from disk — failure here doesn't block the
     // preview/import flow above, it's just persistence for next time.
     if(bytes){
+      showLoading('Saving a copy for later reuse…');
       const path = STATE.currentSchoolId + '/' + Date.now() + '_' + file.name;
       const {error: upErr} = await sb.storage.from('timetable-uploads').upload(path, bytes, {contentType: file.type || 'application/octet-stream'});
       if(upErr){
@@ -751,15 +772,18 @@ function handleImportFile(input){
       }
       render();
     }
+    hideLoading();
   };
+  reader.onerror = ()=>{ hideLoading(); alert('Could not read that file.'); };
   reader.readAsArrayBuffer(file);
 }
 
 async function loadStoredFile(fileId){
   const rec = STATE.uploadedFiles.find(f=>f.id===fileId);
   if(!rec) return;
+  showLoading('Opening '+rec.filename+'…');
   const {data, error} = await sb.storage.from('timetable-uploads').download(rec.storage_path);
-  if(error){ alert('Could not load that file: '+error.message); return; }
+  if(error){ hideLoading(); alert('Could not load that file: '+error.message); return; }
   try{
     const buf = await data.arrayBuffer();
     const wb = XLSX.read(new Uint8Array(buf), {type:'array', cellText:true});
@@ -771,16 +795,19 @@ async function loadStoredFile(fileId){
     IMPORT.rows = [];
   }
   render();
+  hideLoading();
 }
 
 async function deleteStoredFile(fileId){
   const rec = STATE.uploadedFiles.find(f=>f.id===fileId);
   if(!rec) return;
   if(!confirm(`Remove "${rec.filename}" from saved uploads? This only deletes the stored file — any classes/sessions already imported from it are not affected.`)) return;
+  showLoading('Removing '+rec.filename+'…');
   await sb.storage.from('timetable-uploads').remove([rec.storage_path]);
-  if(!await dbWrite(sb.from('uploaded_files').delete().eq('id', fileId), 'delete stored file')) return;
+  if(!await dbWrite(sb.from('uploaded_files').delete().eq('id', fileId), 'delete stored file')){ hideLoading(); return; }
   await loadAll();
   render();
+  hideLoading();
 }
 
 function parseCurrentSheet(){
@@ -963,11 +990,16 @@ async function performUndoBatch(batchId){
   //    (outside this batch) still references them
   const classIds = batch.created_class_ids || [];
   let classesKept = 0, classesDeleted = 0;
+  const classErrors = [];
   for(const classId of classIds){
     const stillUsed = STATE.sessions.some(s=>s.class_id===classId && s.import_batch_id!==batchId);
     if(stillUsed){ classesKept++; continue; }
     const {error} = await sb.from('classes').delete().eq('id', classId);
-    if(error){ console.error('Could not delete class', classId, error); classesKept++; continue; }
+    if(error){
+      console.error('Could not delete class', classId, error.message, error);
+      classErrors.push(`${classId}: ${error.message}`);
+      continue;
+    }
     classesDeleted++;
   }
 
@@ -975,17 +1007,22 @@ async function performUndoBatch(batchId){
   //    references them (whether from this import or added since)
   const ygIds = batch.created_year_group_ids || [];
   let ygsKept = 0, ygsDeleted = 0;
+  const ygErrors = [];
   for(const ygId of ygIds){
     const {data: refs} = await sb.from('classes').select('id').eq('year_group_id', ygId).limit(1);
     if(refs && refs.length){ ygsKept++; continue; }
     const {error} = await sb.from('year_groups').delete().eq('id', ygId);
-    if(error){ console.error('Could not delete year group', ygId, error); ygsKept++; continue; }
+    if(error){
+      console.error('Could not delete year group', ygId, error.message, error);
+      ygErrors.push(`${ygId}: ${error.message}`);
+      continue;
+    }
     ygsDeleted++;
   }
 
   if(!await dbWrite(sb.from('import_batches').delete().eq('id', batchId), 'undo import (batch record)')) return {ok:false};
 
-  return {ok:true, classesDeleted, classesKept, ygsDeleted, ygsKept};
+  return {ok:true, classesDeleted, classesKept, ygsDeleted, ygsKept, classErrors, ygErrors};
 }
 
 async function undoImportBatch(batchId){
@@ -993,13 +1030,21 @@ async function undoImportBatch(batchId){
   if(!batch){ alert('Could not find that import batch.'); return; }
   if(!confirm(`Undo this import? This removes:\n- ${batch.session_count} session(s) it created\n- any class or year group it created, but ONLY if nothing else has used them since\n\nClasses/year groups that already existed before this import, or that you've added other sessions to since, are left untouched.`)) return;
 
+  showLoading('Undoing this import — this can take a little while for large imports…');
   const result = await performUndoBatch(batchId);
-  if(!result.ok){ if(result.error) alert(result.error); return; }
+  if(!result.ok){ hideLoading(); if(result.error) alert(result.error); return; }
 
   await loadAll();
   render();
-  if(result.classesKept>0 || result.ygsKept>0){
-    alert(`Undo complete, with some things kept because they're now used elsewhere:\n${result.classesDeleted} class(es) removed, ${result.classesKept} kept.\n${result.ygsDeleted} year group(s) removed, ${result.ygsKept} kept.`);
+  hideLoading();
+  const hasErrors = (result.classErrors && result.classErrors.length) || (result.ygErrors && result.ygErrors.length);
+  if(result.classesKept>0 || result.ygsKept>0 || hasErrors){
+    let msg = `Undo complete.\n${result.classesDeleted} class(es) removed, ${result.classesKept} kept (still used elsewhere).\n${result.ygsDeleted} year group(s) removed, ${result.ygsKept} kept (still used elsewhere).`;
+    if(hasErrors){
+      const lines = [...(result.classErrors||[]).map(e=>'Class '+e), ...(result.ygErrors||[]).map(e=>'Year group '+e)];
+      msg += `\n\nSome deletions failed with an error (these were left in place):\n` + lines.join('\n');
+    }
+    alert(msg);
   }
 }
 
@@ -1009,8 +1054,22 @@ async function commitImport(){
   if(replaceBatchId){
     const batch = STATE.importBatches.find(b=>b.id===replaceBatchId);
     if(!confirm(`This will first remove everything from "${batch?batch.label:'that import'}" (same safe rule as Undo — only removes what's unused elsewhere), then add this new import. Continue?`)) return;
+  }
+
+  showLoading('Importing — this can take a little while for large timetables…');
+  try{
+
+  if(replaceBatchId){
     const undoResult = await performUndoBatch(replaceBatchId);
     if(!undoResult.ok){ if(undoResult.error) alert(undoResult.error); return; }
+    const hasErrors = (undoResult.classErrors && undoResult.classErrors.length) || (undoResult.ygErrors && undoResult.ygErrors.length);
+    if(hasErrors){
+      const lines = [...(undoResult.classErrors||[]).map(e=>'Class '+e), ...(undoResult.ygErrors||[]).map(e=>'Year group '+e)];
+      hideLoading();
+      const proceed = confirm(`Some old items from that import could not be removed:\n${lines.join('\n')}\n\nThe new import will still proceed, but you may end up with both the old and new versions side by side for those. Continue anyway?`);
+      showLoading('Importing — this can take a little while for large timetables…');
+      if(!proceed) return;
+    }
     await loadAll(); // refresh STATE.classes/yearGroups/sessions before creating new ones below
   }
 
@@ -1090,10 +1149,89 @@ async function commitImport(){
     }
   }
 
+  hideLoading();
   alert(`Import complete.\n${toInsert.length} sessions created.\n${newClassIds.length} new classes created.\n${newYearGroupIds.length} new year groups created.\n${skippedDup} sessions skipped (already existed).\n${skippedUnchecked} sessions skipped (unchecked).`);
   IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null };
   await loadAll();
   goPage('classes');
+
+  }finally{
+    hideLoading();
+  }
+}
+
+/* ---------------------------------------------------------
+   TEACHER WORKLOAD
+   --------------------------------------------------------- */
+function renderTeacherWorkload(){
+  const m = document.getElementById('main');
+  m.appendChild(el(head('01c · Staff','Teacher workload','Same weekly timetable, flipped to show it by teacher instead of by class. Overlapping sessions for the same teacher are flagged in red.')));
+
+  const withTeacher = STATE.sessions.filter(s=>s.teacher && s.teacher.trim());
+  if(withTeacher.length===0){
+    m.appendChild(el(`<div class="empty">No sessions have a teacher assigned yet. Add teachers on the Classes & timetable page, or import from Excel.</div>`));
+    return;
+  }
+
+  // detect overlaps: same teacher, same day, overlapping time ranges
+  function overlaps(a,b){ return a.start_time < b.end_time && b.start_time < a.end_time; }
+  const conflictIds = new Set();
+  const teachers = [...new Set(withTeacher.map(s=>s.teacher.trim()))].sort((a,b)=>naturalCollator.compare(a,b));
+  teachers.forEach(t=>{
+    const mine = withTeacher.filter(s=>s.teacher.trim()===t);
+    for(let d=0; d<7; d++){
+      const dayMine = mine.filter(s=>s.day_of_week===d);
+      for(let i=0;i<dayMine.length;i++){
+        for(let j=i+1;j<dayMine.length;j++){
+          if(overlaps(dayMine[i], dayMine[j])){ conflictIds.add(dayMine[i].id); conflictIds.add(dayMine[j].id); }
+        }
+      }
+    }
+  });
+
+  // workload summary
+  const summaryPanel = el(`<div class="panel"><h3>Weekly session count per teacher</h3>
+    <table><thead><tr><th>Teacher</th><th>Sessions / week</th><th>Classes</th></tr></thead><tbody id="workloadSummaryBody"></tbody></table></div>`);
+  m.appendChild(summaryPanel);
+  const sbody = summaryPanel.querySelector('#workloadSummaryBody');
+  const byCount = teachers.map(t=>{
+    const mine = withTeacher.filter(s=>s.teacher.trim()===t);
+    const classNames = [...new Set(mine.map(s=>{ const c=byId(STATE.classes, s.class_id); return c?c.name:'?'; }))];
+    return {teacher:t, count: mine.length, classNames};
+  }).sort((a,b)=>b.count-a.count);
+  byCount.forEach(row=>{
+    sbody.appendChild(el(`<tr><td><b>${esc(row.teacher)}</b></td><td class="mono">${row.count}</td><td>${esc(row.classNames.join(', '))}</td></tr>`));
+  });
+
+  if(conflictIds.size>0){
+    m.appendChild(el(`<div class="conflict-box"><b>${conflictIds.size} overlapping session${conflictIds.size>1?'s':''} found</b>
+      A teacher is scheduled for two classes at the same time on the same day — flagged in red in the grid below.</div>`));
+  }
+
+  // grid: rows = teachers, columns = Mon-Fri, cells = that teacher's sessions that day
+  const panel = el(`<div class="panel"><h3>Weekly grid by teacher</h3>
+    <div class="cal-wrap"><table class="cal"><thead><tr><th>Teacher</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody id="workloadGridBody"></tbody></table></div>
+    <div class="legend"><span><i style="background:var(--danger-dim)"></i>Overlapping sessions (double-booked)</span></div>
+  </div>`);
+  m.appendChild(panel);
+  const tbody = panel.querySelector('#workloadGridBody');
+  teachers.forEach(t=>{
+    const mine = withTeacher.filter(s=>s.teacher.trim()===t);
+    const cells = [0,1,2,3,4].map(dayIdx=>{
+      const daySessions = mine.filter(s=>s.day_of_week===dayIdx).sort((a,b)=>a.start_time.localeCompare(b.start_time));
+      if(daySessions.length===0) return `<td></td>`;
+      const inner = daySessions.map(s=>{
+        const c = byId(STATE.classes, s.class_id);
+        const isConflict = conflictIds.has(s.id);
+        return `<div class="${isConflict?'status-conflict':'status-occupied'}" style="border-radius:6px;padding:4px 6px;margin-bottom:4px;">
+          <div class="sport">${s.start_time.slice(0,5)}–${s.end_time.slice(0,5)}</div>
+          <div class="fac">${c?esc(c.name):'?'}</div>
+        </div>`;
+      }).join('');
+      return `<td>${inner}</td>`;
+    }).join('');
+    tbody.appendChild(el(`<tr><td class="mono"><b>${esc(t)}</b></td>${cells}</tr>`));
+  });
 }
 
 /* ---------------------------------------------------------
@@ -1203,8 +1341,10 @@ async function deleteAllClasses(){
   if(count===0) return;
   const typed = prompt(`This deletes all ${count} classes for this school, along with every one of their weekly sessions and any generated programme entries tied to them. Year groups, sports, and facilities are NOT touched.\n\nThis cannot be undone. Type DELETE to confirm.`);
   if(typed!=='DELETE') return;
-  if(!await dbWrite(sb.from('classes').delete().eq('school_id', STATE.currentSchoolId), 'delete all classes')) return;
+  showLoading('Deleting all classes…');
+  if(!await dbWrite(sb.from('classes').delete().eq('school_id', STATE.currentSchoolId), 'delete all classes')){ hideLoading(); return; }
   await loadAll(); render();
+  hideLoading();
 }
 async function addSession(classId){
   const day = parseInt(document.getElementById('day_'+classId).value,10);
@@ -1441,6 +1581,8 @@ function dateRange(start,end){
 async function runGenerator(){
   const periodId = document.getElementById('genPeriod').value;
   if(!periodId){ alert('Choose a period first.'); return; }
+  showLoading('Generating the programme — this can take a little while for a full period…');
+  try{
   const period = byId(STATE.periods, periodId);
   const allDates = dateRange(period.start_date, period.end_date);
   const unavailableDates = new Set(
@@ -1522,7 +1664,11 @@ async function runGenerator(){
     }
   }
   await loadAll();
+  hideLoading();
   goPage('calendar');
+  }finally{
+    hideLoading();
+  }
 }
 
 async function clearGenerated(){
