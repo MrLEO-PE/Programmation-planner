@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v39-teacher-in-calendar -->
+<!-- BUILD: v40-print-and-full-export -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -144,6 +144,36 @@ tr:last-child td{border-bottom:none;}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:14px 18px;min-width:130px;}
 .stat .n{font-size:26px;font-family:"IBM Plex Mono",monospace;color:var(--court);}
 .stat .l{font-size:11px;color:var(--muted);text-transform:uppercase;letter-spacing:.5px;font-family:"IBM Plex Mono",monospace;}
+
+/* ---------- print ---------- */
+@media print{
+  @page{ size: A4 landscape; margin: 10mm; }
+  html,body{background:#fff;}
+  /* chrome that shouldn't appear on paper */
+  .sidebar, .toolbar, .global-overlay, #loginScreen, #loading,
+  .btn, button, select, input, .hint, .legend, #schoolSwitcher{ display:none !important; }
+  #app{ display:block !important; grid-template-columns:none !important; }
+  .main{ padding:0 !important; overflow:visible !important; }
+  .panel{ border:none; padding:0; margin:0 0 10mm 0; break-inside:avoid; }
+  .panel h3{ font-size:13px; color:#000; margin-bottom:6px; }
+  .pagehead{ margin-bottom:6mm; }
+  .pagehead p.sub{ display:none; }
+  /* each week starts a fresh page so nothing splits mid-grid */
+  .print-page-break{ break-before:page; }
+  .cal-wrap{ overflow:visible !important; }
+  .cal{ min-width:0 !important; width:100%; font-size:9.5px; }
+  .cal td{ padding:3px 4px; min-width:0; }
+  .cal th{ font-size:8px; }
+  .cal .fac{ font-size:8.5px; }
+  table{ font-size:10px; }
+  /* keep the status colours readable in print */
+  .status-generated{ background:#e6efec !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .status-manual{ background:#fdf1de !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .status-conflict{ background:#fbe4de !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .status-occupied{ background:#e6efec !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  .print-header{ display:block !important; margin-bottom:4mm; font-size:12px; }
+}
+.print-header{ display:none; }
 </style>
 </head>
 <body>
@@ -500,6 +530,8 @@ function render(){
   const main = document.getElementById('main');
   main.innerHTML = '';
   try{
+    // identifies the printout on paper; hidden on screen via CSS
+    main.appendChild(el(`<div class="print-header"><b>${esc(STATE.school && STATE.school.name ? STATE.school.name : 'PE Programme')}</b> — printed ${new Date().toLocaleDateString()}</div>`));
     (map[currentPage] || renderDashboard)();
   }catch(err){
     console.error('render() failed on page', currentPage, err);
@@ -2143,10 +2175,10 @@ function renderCalendar(){
   });
   const weekKeys = Object.keys(weeks).sort();
 
-  weekKeys.forEach(wk=>{
+  weekKeys.forEach((wk, wkIndex)=>{
     const weekEntries = weeks[wk];
     const slots = [...new Set(weekEntries.map(e=>e._slot))].sort();
-    const wkPanel = el(`<div class="panel"><h3>Week of ${wk}</h3>
+    const wkPanel = el(`<div class="panel ${wkIndex>0?'print-page-break':''}"><h3>Week of ${wk}</h3>
       <div class="cal-wrap"><table class="cal"><thead><tr><th>Time</th>${DAYS.slice(0,5).map(d=>`<th>${d}</th>`).join('')}</tr></thead><tbody></tbody></table></div>
     </div>`);
     const tbody = wkPanel.querySelector('tbody');
@@ -2253,15 +2285,113 @@ async function editEntry(id){
    --------------------------------------------------------- */
 function renderExport(){
   const m = document.getElementById('main');
-  m.appendChild(el(head('08 · Output','Export / print','Print the current calendar view, or export it as CSV.')));
-  const panel = el(`<div class="panel"><h3>Export options</h3>
+  m.appendChild(el(head('08 · Output','Export / print','Print any view, or download the programme as a spreadsheet.')));
+
+  const panel = el(`<div class="panel"><h3>Print</h3>
+    <p class="hint" style="margin-bottom:12px;">Printing is set up for A4 landscape, one week per page, with the sidebar and buttons hidden. Choose a view, then print it.</p>
     <div class="row">
-      <button class="btn" onclick="window.print()">Print current programme</button>
-      <button class="btn secondary" onclick="exportCSV()">Download CSV</button>
+      <button class="btn" onclick="printView('calendar')">Print programme calendar</button>
+      <button class="btn secondary" onclick="printView('classes')">Print weekly timetable</button>
+      <button class="btn secondary" onclick="printView('workload')">Print teacher workload</button>
     </div>
-    <p class="hint">Print uses your browser's print dialog — set layout to landscape for wide programmes. CSV includes date, class, sport, facility, status.</p>
   </div>`);
   m.appendChild(panel);
+
+  const dl = el(`<div class="panel"><h3>Download</h3>
+    <div class="row">
+      <button class="btn" onclick="exportWorkbook()">Excel workbook (everything)</button>
+      <button class="btn secondary" onclick="exportCSV()">CSV (programme only)</button>
+    </div>
+    <p class="hint">The Excel workbook has one sheet per part of your setup — programme, classes &amp; sessions, sports, facilities, periods — so it doubles as a backup of everything in this school.</p>
+  </div>`);
+  m.appendChild(dl);
+}
+
+function printView(page){
+  goPage(page);
+  // let the page render before opening the print dialog
+  setTimeout(()=>window.print(), 300);
+}
+
+function exportWorkbook(){
+  const schoolName = STATE.school.name || 'school';
+  const wb = XLSX.utils.book_new();
+
+  // 1. programme
+  const prog = [['Date','Day','Time','Class','Year group','Teacher','Sport','Facility','Status']];
+  STATE.entries.slice().sort((a,b)=>a.date.localeCompare(b.date)).forEach(e=>{
+    const cls = byId(STATE.classes, e.class_id);
+    const yg = cls ? byId(STATE.yearGroups, cls.year_group_id) : null;
+    const sess = byId(STATE.sessions, e.session_id);
+    const dow = new Date(e.date+'T00:00:00').getDay();
+    prog.push([
+      e.date, DAYS[dow===0?6:dow-1],
+      sess ? sess.start_time.slice(0,5)+'–'+sess.end_time.slice(0,5) : '',
+      cls?cls.name:'', yg?yg.name:'',
+      sess && sess.teacher ? sess.teacher : '',
+      byId(STATE.sports, e.sport_id)?.name || '',
+      byId(STATE.facilities, e.facility_id)?.name || '',
+      e.status
+    ]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(prog), 'Programme');
+
+  // 2. classes & weekly sessions
+  const sessRows = [['Class','Year group','Day','Start','End','Teacher']];
+  STATE.classes.forEach(c=>{
+    const yg = byId(STATE.yearGroups, c.year_group_id);
+    const mine = STATE.sessions.filter(s=>s.class_id===c.id)
+      .sort((a,b)=>a.day_of_week-b.day_of_week || a.start_time.localeCompare(b.start_time));
+    if(mine.length===0){ sessRows.push([c.name, yg?yg.name:'', '', '', '', '']); return; }
+    mine.forEach(s=>{
+      sessRows.push([c.name, yg?yg.name:'', DAYS[s.day_of_week], s.start_time.slice(0,5), s.end_time.slice(0,5), s.teacher||'']);
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sessRows), 'Classes & sessions');
+
+  // 3. sports and their facilities
+  const sportRows = [['Sport','Facilities']];
+  STATE.sports.forEach(sp=>{
+    const facs = STATE.sportFacilities.filter(l=>l.sport_id===sp.id)
+      .map(l=>byId(STATE.facilities, l.facility_id)?.name).filter(Boolean);
+    sportRows.push([sp.name, facs.join(', ')]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sportRows), 'Sports');
+
+  // 4. facilities
+  const facRows = [['Facility','Used by sports']];
+  STATE.facilities.forEach(f=>{
+    const sports = STATE.sportFacilities.filter(l=>l.facility_id===f.id)
+      .map(l=>byId(STATE.sports, l.sport_id)?.name).filter(Boolean);
+    facRows.push([f.name, sports.join(', ')]);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(facRows), 'Facilities');
+
+  // 5. terms, their programme setup and unavailable dates
+  const perRows = [['Term','Start','End','Year group','Sport','Weeks','Starts the term']];
+  STATE.periods.forEach(p=>{
+    const links = STATE.ygSports.filter(l=>l.period_id===p.id);
+    if(links.length===0){ perRows.push([p.name, p.start_date, p.end_date, '', '', '', '']); return; }
+    links.forEach(l=>{
+      perRows.push([
+        p.name, p.start_date, p.end_date,
+        byId(STATE.yearGroups, l.year_group_id)?.name || '',
+        byId(STATE.sports, l.sport_id)?.name || '',
+        l.weeks || 4,
+        l.start_first ? 'yes' : ''
+      ]);
+    });
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(perRows), 'Terms & programme');
+
+  const unavRows = [['Date','Label','Term']];
+  STATE.unavailable.forEach(u=>{
+    unavRows.push([u.date, u.label||'', byId(STATE.periods, u.period_id)?.name || 'any']);
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(unavRows), 'Unavailable dates');
+
+  const stamp = new Date().toISOString().slice(0,10);
+  XLSX.writeFile(wb, `${schoolName.replace(/[^a-zA-Z0-9]+/g,'-')}-pe-programme-${stamp}.xlsx`);
 }
 function exportCSV(){
   const rows = [['Date','Day','Class','Sport','Facility','Status']];
