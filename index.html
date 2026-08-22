@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v42-weekly-print-per-teacher -->
+<!-- BUILD: v44-guaranteed-one-page-fit -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -2301,12 +2301,13 @@ function renderExport(){
 
   const teacherNames = [...new Set(STATE.sessions.map(s=>s.teacher && s.teacher.trim()).filter(Boolean))].sort((a,b)=>naturalCollator.compare(a,b));
   const teacherOptions = `<option value="">All teachers</option>` + teacherNames.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
-  const panel = el(`<div class="panel"><h3>Print this week's schedule</h3>
-    <p class="hint" style="margin-bottom:12px;">Prints Monday–Friday of the current week, on a single A4 page. Pick a teacher for just their classes, or "All teachers" for the whole school.</p>
+  const panel = el(`<div class="panel"><h3>Print or save this week's schedule</h3>
+    <p class="hint" style="margin-bottom:12px;">Monday–Friday of the upcoming week, on a single A4 landscape page. Pick a teacher for just their classes, or "All teachers" for the whole school.</p>
     <div class="row">
       <div class="field" style="max-width:280px;"><label>Who for</label><select id="printTeacherSelect">${teacherOptions}</select></div>
-      <button class="btn" style="align-self:flex-end;" onclick="printWeeklyTeacherSchedule()">Print</button>
+      <button class="btn" style="align-self:flex-end;" onclick="printWeeklyTeacherSchedule()">Print / Save as PDF</button>
     </div>
+    <p class="hint" style="margin-top:10px;">To send it to your team instead of printing on paper: in the print dialog that opens, change the destination/printer to <b>"Save as PDF"</b> (every major browser offers this) — that saves a PDF file you can email or share, using the exact same layout as the paper version.</p>
   </div>`);
   m.appendChild(panel);
 
@@ -2340,6 +2341,42 @@ function getMondayOfWeek(d){
   m.setDate(m.getDate()+diff);
   m.setHours(0,0,0,0);
   return m;
+}
+
+/* Shrinks an element so it's guaranteed to fit within one A4 landscape
+   printed page, by measuring its actual rendered size and scaling down if
+   needed — rather than hoping a fixed small font is always small enough.
+   Pure scale-factor math is in computeFitScale() so it can be unit tested
+   without a real browser layout engine. */
+function computeFitScale(contentWidthPx, contentHeightPx, pageWidthPx, pageHeightPx){
+  if(contentWidthPx<=0 || contentHeightPx<=0) return 1;
+  const scale = Math.min(pageWidthPx/contentWidthPx, pageHeightPx/contentHeightPx, 1);
+  return scale;
+}
+
+function fitToOnePrintedPage(el){
+  // A4 landscape usable area at 10mm margins, in CSS px (96dpi)
+  const MM_TO_PX = 96/25.4;
+  const pageWidthPx = (297-20) * MM_TO_PX;
+  const pageHeightPx = (210-20) * MM_TO_PX;
+
+  el.style.width = pageWidthPx + 'px';
+  el.style.transform = 'none';
+  const rect = el.getBoundingClientRect();
+  const scale = computeFitScale(rect.width, rect.height, pageWidthPx, pageHeightPx);
+
+  if(scale < 1){
+    el.style.transformOrigin = 'top left';
+    el.style.transform = `scale(${scale})`;
+    // compensate width so the scaled box still lines up at the page's left edge
+    el.style.width = (pageWidthPx/scale) + 'px';
+  }
+}
+
+function clearFitToPage(el){
+  el.style.width = '';
+  el.style.transform = '';
+  el.style.transformOrigin = '';
 }
 
 function printWeeklyTeacherSchedule(){
@@ -2389,17 +2426,11 @@ function printWeeklyTeacherSchedule(){
   }
   main.appendChild(table);
 
-  // force a single portrait page for this specific printout, without
-  // permanently changing the landscape @page rule the other views use
-  const override = document.createElement('style');
-  override.id = 'printSizeOverride';
-  override.textContent = '@media print{ @page{ size: A4 portrait; margin: 12mm; } .cal{ font-size:11px; } .cal td{ padding:5px 6px; } }';
-  document.head.appendChild(override);
-
   setTimeout(()=>{
+    fitToOnePrintedPage(main);
     window.print();
     setTimeout(()=>{
-      override.remove();
+      clearFitToPage(main);
       goPage('export');
     }, 300);
   }, 200);
