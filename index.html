@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v34-fix-termweeks-order -->
+<!-- BUILD: v35-start-first-sport -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1609,7 +1609,7 @@ function renderProgrammeSetup(){
     });
     const wkBox = panel.querySelector(`#wk_${yg.id}`);
     if(links.length){
-      const tbl = el(`<table><thead><tr><th>Sport</th><th style="width:170px;">Weeks (1–${termWeeks||1})</th></tr></thead><tbody></tbody></table>`);
+      const tbl = el(`<table><thead><tr><th>Sport</th><th style="width:170px;">Weeks (1–${termWeeks||1})</th><th style="width:200px;">Start the term with this</th></tr></thead><tbody></tbody></table>`);
       const tbody = tbl.querySelector('tbody');
       links.forEach(l=>{
         const sp = byId(STATE.sports, l.sport_id);
@@ -1617,6 +1617,8 @@ function renderProgrammeSetup(){
           <td>${sp?esc(sp.name):'?'}</td>
           <td><input type="number" min="1" max="${termWeeks||1}" value="${l.weeks||4}" style="width:90px;"
               onchange="setSportWeeks('${l.id}', this.value, this, ${termWeeks||1})"></td>
+          <td><input type="checkbox" ${l.start_first?'checked':''}
+              onchange="setSportStartFirst('${yg.id}','${l.id}', this.checked)"></td>
         </tr>`));
       });
       wkBox.appendChild(tbl);
@@ -1631,8 +1633,13 @@ function renderProgrammeSetup(){
       } else {
         status = `<span class="tag clay">${-remaining} week${remaining===-1?'':'s'} over — the term will end before the last sport finishes</span>`;
       }
+      const starter = links.find(l=>l.start_first);
+      const starterName = starter ? (byId(STATE.sports, starter.sport_id)?.name || '?') : null;
       wkBox.appendChild(el(`<p class="hint">Allocated <b>${totalWeeks}</b> of <b>${termWeeks}</b> teaching weeks. ${status}<br>
-        Each sport runs as a block for its number of weeks, then the year group moves to the next. Groups sharing a time slot are offset so they're on different sports at the same moment, which keeps facilities free.</p>`));
+        ${starterName
+          ? `<b>${esc(starterName)}</b> is set to start the term: every group does it together for its ${starter.weeks||4} week${(starter.weeks||4)===1?'':'s'}, then the remaining sports rotate with groups offset so they're on different sports at the same moment.`
+          : `Each sport runs as a block for its number of weeks, then the year group moves to the next. Groups sharing a time slot are offset so they're on different sports at the same moment, which keeps facilities free.`}
+        </p>`));
     } else {
       wkBox.appendChild(el(`<p class="hint">Pick one or more sports above to set how many weeks each one runs. This term has ${termWeeks} teaching week${termWeeks===1?'':'s'} to fill.</p>`));
     }
@@ -1648,6 +1655,22 @@ async function setSportWeeks(linkId, value, input, maxWeeks){
   if(!await dbWrite(sb.from('year_group_sports').update({weeks}).eq('id', linkId), 'set sport weeks')) return;
   await loadAll();
   render();
+}
+
+async function setSportStartFirst(ygId, linkId, checked){
+  const pid = STATE._setupPeriodId;
+  showLoading(checked ? 'Setting starting sport…' : 'Clearing starting sport…');
+  // only one sport can start the term for a given year group + term
+  if(checked){
+    const others = STATE.ygSports.filter(l=>l.year_group_id===ygId && l.period_id===pid && l.id!==linkId && l.start_first);
+    for(const o of others){
+      if(!await dbWrite(sb.from('year_group_sports').update({start_first:false}).eq('id', o.id), 'clear previous starting sport')){ hideLoading(); return; }
+    }
+  }
+  if(!await dbWrite(sb.from('year_group_sports').update({start_first:checked}).eq('id', linkId), 'set starting sport')){ hideLoading(); return; }
+  await loadAll();
+  render();
+  hideLoading();
 }
 
 async function autoSplitWeeks(ygId){
@@ -1835,22 +1858,46 @@ async function runGenerator(){
   function pickSportForSlot(ygId, date, sess, cls){
     const links = sportLinksFor(ygId);
     if(links.length===0) return null;
-    // rotate this class's sport order by its offset so simultaneous groups differ
-    const off = (classOffset[cls.id] || 0) % links.length;
-    const rotated = links.slice(off).concat(links.slice(0, off));
-    // expand into a week-by-week sequence: each sport repeated for its weeks
+
+    // A sport flagged "start the term with this" runs first for EVERY group,
+    // un-rotated, for its configured weeks. Only the sports after it get the
+    // per-class offset that spreads groups across facilities.
+    const starter = links.find(l=>l.start_first);
+    const rest = starter ? links.filter(l=>l.id!==starter.id) : links.slice();
+
     const weekSeq = [];
-    rotated.forEach(l=>{
-      const w = Math.max(1, Math.min(15, l.weeks || 4));
-      for(let i=0;i<w;i++) weekSeq.push(l.sport_id);
-    });
+    if(starter){
+      const w = Math.max(1, starter.weeks || 4);
+      for(let i=0;i<w;i++) weekSeq.push(starter.sport_id);
+    }
+    if(rest.length){
+      const off = (classOffset[cls.id] || 0) % rest.length;
+      const rotated = rest.slice(off).concat(rest.slice(0, off));
+      rotated.forEach(l=>{
+        const w = Math.max(1, l.weeks || 4);
+        for(let i=0;i<w;i++) weekSeq.push(l.sport_id);
+      });
+    }
+    if(weekSeq.length===0) return null;
+
     const wi = Math.max(0, weekIndexOf(date));
-    const scheduled = weekSeq[wi % weekSeq.length];
+    // once past the starter block, the rest repeats on its own cycle
+    const starterWeeks = starter ? Math.max(1, starter.weeks || 4) : 0;
+    let scheduled;
+    if(starter && wi < starterWeeks){
+      scheduled = starter.sport_id;
+    } else if(weekSeq.length > starterWeeks){
+      const cycle = weekSeq.slice(starterWeeks);
+      scheduled = cycle[(wi - starterWeeks) % cycle.length];
+    } else {
+      scheduled = weekSeq[wi % weekSeq.length];
+    }
 
     // prefer the scheduled sport; only if none of its facilities are free
     // do we look at the year group's other sports, so a class still gets a
     // usable session rather than an empty conflict
-    const tryOrder = [scheduled, ...rotated.map(l=>l.sport_id).filter(id=>id!==scheduled)];
+    const allIds = links.map(l=>l.sport_id);
+    const tryOrder = [scheduled, ...allIds.filter(id=>id!==scheduled)];
     for(const sportId of tryOrder){
       const facOptions = STATE.sportFacilities.filter(l=>l.sport_id===sportId).map(l=>l.facility_id);
       if(facOptions.some(facId=>isFree(date, sess.start_time, sess.end_time, facId))) return sportId;
