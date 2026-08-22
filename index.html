@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v32-no-1000-row-limit -->
+<!-- BUILD: v33-auto-term-weeks -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -516,6 +516,38 @@ function head(eyebrow,title,sub){
 function el(html){ const t=document.createElement('template'); t.innerHTML=html.trim(); return t.content.firstElementChild || t.content.firstChild; }
 function esc(s){ return (s??'').toString().replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function byId(arr,id){ return arr.find(x=>x.id===id); }
+
+/* How many teaching weeks a term actually spans, based on its dates.
+   Counts calendar weeks from the start date through the end date, then
+   subtracts any week that is entirely unavailable (holidays etc.), so the
+   number reflects weeks PE can really run. */
+function weeksInPeriod(period){
+  if(!period || !period.start_date || !period.end_date) return 0;
+  const start = new Date(period.start_date+'T00:00:00');
+  const end = new Date(period.end_date+'T00:00:00');
+  if(end < start) return 0;
+  const days = Math.floor((end - start)/(24*60*60*1000)) + 1;
+  const totalWeeks = Math.ceil(days/7);
+
+  // drop weeks where every single day is marked unavailable
+  const unavailable = new Set(
+    STATE.unavailable
+      .filter(u=>!u.period_id || u.period_id===period.id)
+      .map(u=>u.date)
+  );
+  let usable = 0;
+  for(let w=0; w<totalWeeks; w++){
+    let anyDayFree = false;
+    for(let d=0; d<7; d++){
+      const day = new Date(start);
+      day.setDate(start.getDate() + w*7 + d);
+      if(day > end) break;
+      if(!unavailable.has(day.toISOString().slice(0,10))){ anyDayFree = true; break; }
+    }
+    if(anyDayFree) usable++;
+  }
+  return usable;
+}
 
 /* Supabase caps a single select at 1000 rows. Programme entries easily
    exceed that over a full term, so page through until everything is loaded
@@ -1547,11 +1579,13 @@ function renderProgrammeSetup(){
         </select>
       </div>
     </div>
-    <p class="hint">Each term has its own sport selection. The generator uses whichever term you pick when you run it.</p>
+    <p class="hint">Each term has its own sport selection. The generator uses whichever term you pick when you run it. <b>This term runs ${termWeeks} teaching week${termWeeks===1?'':'s'}</b> (calculated from its dates, minus any fully unavailable weeks).</p>
   </div>`);
   m.appendChild(selPanel);
 
   const pid = STATE._setupPeriodId;
+  const currentPeriod = byId(STATE.periods, pid);
+  const termWeeks = weeksInPeriod(currentPeriod);
   const legacy = STATE.ygSports.filter(l=>!l.period_id);
   if(legacy.length){
     m.appendChild(el(`<div class="conflict-box" style="border-color:var(--gold);background:#fdf1de;color:var(--gold);">
@@ -1574,32 +1608,66 @@ function renderProgrammeSetup(){
     });
     const wkBox = panel.querySelector(`#wk_${yg.id}`);
     if(links.length){
-      const tbl = el(`<table><thead><tr><th>Sport</th><th style="width:150px;">Weeks (1–15)</th></tr></thead><tbody></tbody></table>`);
+      const tbl = el(`<table><thead><tr><th>Sport</th><th style="width:170px;">Weeks (1–${termWeeks||1})</th></tr></thead><tbody></tbody></table>`);
       const tbody = tbl.querySelector('tbody');
       links.forEach(l=>{
         const sp = byId(STATE.sports, l.sport_id);
         tbody.appendChild(el(`<tr>
           <td>${sp?esc(sp.name):'?'}</td>
-          <td><input type="number" min="1" max="15" value="${l.weeks||4}" style="width:90px;"
-              onchange="setSportWeeks('${l.id}', this.value, this)"></td>
+          <td><input type="number" min="1" max="${termWeeks||1}" value="${l.weeks||4}" style="width:90px;"
+              onchange="setSportWeeks('${l.id}', this.value, this, ${termWeeks||1})"></td>
         </tr>`));
       });
       wkBox.appendChild(tbl);
-      wkBox.appendChild(el(`<p class="hint">Total programmed: <b>${totalWeeks} week${totalWeeks===1?'':'s'}</b>. Each sport runs as a block for its number of weeks, then the year group moves to the next one. Groups sharing a time slot are offset so they're on different sports at the same moment (which keeps facilities free), and the sequence repeats if the term runs longer than the total.</p>`));
+      wkBox.appendChild(el(`<button class="btn secondary small" style="margin-top:10px;" onclick="autoSplitWeeks('${yg.id}')">Split ${termWeeks} weeks evenly across these ${links.length} sport${links.length===1?'':'s'}</button>`));
+
+      const remaining = termWeeks - totalWeeks;
+      let status;
+      if(remaining === 0){
+        status = `<span class="tag green">fills the term exactly</span>`;
+      } else if(remaining > 0){
+        status = `<span class="tag clay">${remaining} week${remaining===1?'':'s'} unallocated — the sequence will repeat to fill them</span>`;
+      } else {
+        status = `<span class="tag clay">${-remaining} week${remaining===-1?'':'s'} over — the term will end before the last sport finishes</span>`;
+      }
+      wkBox.appendChild(el(`<p class="hint">Allocated <b>${totalWeeks}</b> of <b>${termWeeks}</b> teaching weeks. ${status}<br>
+        Each sport runs as a block for its number of weeks, then the year group moves to the next. Groups sharing a time slot are offset so they're on different sports at the same moment, which keeps facilities free.</p>`));
     } else {
-      wkBox.appendChild(el(`<p class="hint">Pick one or more sports above to set how many weeks each one runs.</p>`));
+      wkBox.appendChild(el(`<p class="hint">Pick one or more sports above to set how many weeks each one runs. This term has ${termWeeks} teaching week${termWeeks===1?'':'s'} to fill.</p>`));
     }
     m.appendChild(panel);
   });
 }
-async function setSportWeeks(linkId, value, input){
+async function setSportWeeks(linkId, value, input, maxWeeks){
+  const cap = Math.max(1, maxWeeks || 60);
   let weeks = parseInt(value,10);
   if(isNaN(weeks) || weeks<1) weeks = 1;
-  if(weeks>15) weeks = 15;
+  if(weeks>cap) weeks = cap;
   input.value = weeks;
   if(!await dbWrite(sb.from('year_group_sports').update({weeks}).eq('id', linkId), 'set sport weeks')) return;
   await loadAll();
   render();
+}
+
+async function autoSplitWeeks(ygId){
+  const pid = STATE._setupPeriodId;
+  const period = byId(STATE.periods, pid);
+  const termWeeks = weeksInPeriod(period);
+  const links = STATE.ygSports.filter(l=>l.year_group_id===ygId && l.period_id===pid);
+  if(links.length===0 || termWeeks<1) return;
+  // spread the term's weeks as evenly as possible; earlier sports absorb the remainder
+  const base = Math.floor(termWeeks / links.length);
+  let remainder = termWeeks % links.length;
+  showLoading('Splitting weeks evenly…');
+  for(const l of links){
+    let w = base + (remainder>0 ? 1 : 0);
+    if(remainder>0) remainder--;
+    if(w<1) w = 1;
+    if(!await dbWrite(sb.from('year_group_sports').update({weeks:w}).eq('id', l.id), 'auto-split weeks')){ hideLoading(); return; }
+  }
+  await loadAll();
+  render();
+  hideLoading();
 }
 async function switchSetupPeriod(pid){
   STATE._setupPeriodId = pid;
