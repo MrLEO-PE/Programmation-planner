@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v26-sibling-sport-sync -->
+<!-- BUILD: v27-batched-clear -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -1690,10 +1690,16 @@ async function runGenerator(){
 
 async function clearGenerated(){
   const gen = STATE.entries.filter(e=>e.status==='generated' || e.status==='conflict');
-  if(gen.length===0) return;
+  if(gen.length===0){ alert('Nothing to clear — there are no generated or conflict entries right now.'); return; }
   if(!confirm(`Remove ${gen.length} generated/conflict entries? Manual changes are kept.`)) return;
-  if(!await dbWrite(sb.from('programme_entries').delete().in('id', gen.map(e=>e.id)), 'clear generated entries')) return;
+  showLoading('Clearing '+gen.length+' entries…');
+  // delete in batches — a single request with hundreds of IDs can exceed URL/request size limits
+  for(let i=0;i<gen.length;i+=100){
+    const batch = gen.slice(i,i+100).map(e=>e.id);
+    if(!await dbWrite(sb.from('programme_entries').delete().in('id', batch), 'clear generated entries')){ hideLoading(); return; }
+  }
   await loadAll(); render();
+  hideLoading();
 }
 
 /* ---------------------------------------------------------
