@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v40-print-and-full-export -->
+<!-- BUILD: v41-teacher-filter -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -2117,9 +2117,12 @@ function renderCalendar(){
 
   const perOptions = `<option value="">All periods</option>` + STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
   const clsOptions = `<option value="">All classes</option>` + STATE.classes.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
+  const teacherNames = [...new Set(STATE.sessions.map(s=>s.teacher && s.teacher.trim()).filter(Boolean))].sort((a,b)=>naturalCollator.compare(a,b));
+  const teacherOptions = `<option value="">All teachers</option>` + teacherNames.map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
   const toolbar = el(`<div class="toolbar">
     <select id="calPeriod">${perOptions}</select>
     <select id="calClass">${clsOptions}</select>
+    <select id="calTeacher">${teacherOptions}</select>
     <button class="btn secondary small" onclick="applyCalFilter()">Filter</button>
   </div>`);
   m.appendChild(toolbar);
@@ -2133,18 +2136,27 @@ function renderCalendar(){
 
   const periodSel = document.getElementById('calPeriod');
   const classSel = document.getElementById('calClass');
+  const teacherSel = document.getElementById('calTeacher');
   periodSel.value = STATE._calPeriodFilter || '';
   classSel.value = STATE._calClassFilter || '';
+  teacherSel.value = STATE._calTeacherFilter || '';
 
   window.applyCalFilter = function(){
     STATE._calPeriodFilter = document.getElementById('calPeriod').value;
     STATE._calClassFilter = document.getElementById('calClass').value;
+    STATE._calTeacherFilter = document.getElementById('calTeacher').value;
     render();
   };
 
   let entries = [...STATE.entries];
   if(STATE._calPeriodFilter) entries = entries.filter(e=>e.period_id===STATE._calPeriodFilter);
   if(STATE._calClassFilter) entries = entries.filter(e=>e.class_id===STATE._calClassFilter);
+  if(STATE._calTeacherFilter){
+    entries = entries.filter(e=>{
+      const sess = byId(STATE.sessions, e.session_id);
+      return sess && sess.teacher && sess.teacher.trim() === STATE._calTeacherFilter;
+    });
+  }
 
   if(entries.length===0){
     m.appendChild(el(`<div class="empty">No entries yet. Run the generator (page 06) or check your filters.</div>`));
