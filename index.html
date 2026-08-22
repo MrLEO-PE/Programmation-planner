@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v18-delete-all-classes -->
+<!-- BUILD: v19-toggleable-import-rules -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -571,7 +571,8 @@ function renderDashboard(){
 /* ---------------------------------------------------------
    IMPORT FROM EXCEL
    --------------------------------------------------------- */
-let IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null };
+let IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null,
+  options: { primarySplit:true, secondarySplit:true } };
 
 function renderImport(){
   const m = document.getElementById('main');
@@ -582,6 +583,23 @@ function renderImport(){
     <p class="hint">Expected layout: a grid with days as column headers, a period/time column on the left, and each PE session written as class name on one line and teacher(s) on the next line within the same cell. Nothing is saved to your school until you review and click Import at the bottom.</p>
   </div>`);
   m.appendChild(uploadPanel);
+
+  const optionsPanel = el(`<div class="panel"><h3>Splitting rules</h3>
+    <p class="hint">These control how a cell with more than one teacher name gets split into separate classes. Turn off whichever doesn't match how your school's timetable works — cells that would have split just import as one combined class with all teachers listed instead.</p>
+    <div style="margin-top:10px;">
+      <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="optPrimarySplit" ${IMPORT.options.primarySplit?'checked':''} onchange="toggleImportOption('primarySplit', this.checked)" style="margin-top:3px;">
+        <span><b>Primary (Year 1–6): one letter per teacher.</b><br>
+        <span class="hint">A code like "5CHJ" with 3 teacher names becomes 3 classes — 5C, 5H, 5J — paired in the order the letters and teachers appear.</span></span>
+      </label>
+      <label style="display:flex;gap:10px;align-items:flex-start;cursor:pointer;">
+        <input type="checkbox" id="optSecondarySplit" ${IMPORT.options.secondarySplit?'checked':''} onchange="toggleImportOption('secondarySplit', this.checked)" style="margin-top:3px;">
+        <span><b>Secondary (Year 7–11): split into gender groups.</b><br>
+        <span class="hint">A code like "8BC" with 2 teacher names becomes "8BC boys" and "8BC girls". 4 teachers becomes boys1/boys2/girls1/girls2, and so on — split by count only, not by reading actual gender.</span></span>
+      </label>
+    </div>
+  </div>`);
+  m.appendChild(optionsPanel);
 
   if(STATE.importBatches.length){
     const histPanel = el(`<div class="panel"><h3>Previous imports</h3>
@@ -656,6 +674,11 @@ function guessYearGroupId(className){
   return match ? match.id : null;
 }
 
+function toggleImportOption(key, value){
+  IMPORT.options[key] = value;
+  if(IMPORT.workbook){ parseCurrentSheet(); render(); }
+}
+
 async function switchImportSheet(name){
   IMPORT.sheetName = name;
   parseCurrentSheet();
@@ -685,7 +708,7 @@ function handleImportFile(input){
 function parseCurrentSheet(){
   try{
     const sheet = IMPORT.workbook.Sheets[IMPORT.sheetName];
-    const result = parseTimetableSheet(sheet);
+    const result = parseTimetableSheet(sheet, IMPORT.options);
     IMPORT.rows = result.rows;
     IMPORT.uniqueClasses = [...new Set(result.rows.map(r=>r.className))].sort();
     IMPORT.parseInfo = result;
@@ -699,7 +722,8 @@ function parseCurrentSheet(){
 
 const DAY_NAMES = ['MONDAY','TUESDAY','WEDNESDAY','THURSDAY','FRIDAY'];
 
-function parseTimetableSheet(sheet){
+function parseTimetableSheet(sheet, options){
+  options = options || {primarySplit:true, secondarySplit:true};
   if(!sheet['!ref']) throw new Error('This sheet appears to be empty.');
   const range = XLSX.utils.decode_range(sheet['!ref']);
   const merges = sheet['!merges'] || [];
@@ -792,31 +816,37 @@ function parseTimetableSheet(sheet){
         // Primary (Year 1–6): a code like "5CHJ" is a year number followed
         // by one letter per class. When the letter count matches the
         // teacher count, pair them in order: 1st letter <-> 1st teacher.
-        const codeMatch = className.match(/^(\d{1,2})\s*([A-Za-z]+)$/);
-        if(codeMatch){
-          const yearNum = parseInt(codeMatch[1],10);
-          const letters = codeMatch[2].split('');
-          if(yearNum>=1 && yearNum<=6 && letters.length===teacherList.length){
-            teacherList.forEach((teacher,i)=>{
-              rows.push({day: dayIdx, start, end, className: yearNum+letters[i], teacher});
-            });
-            return;
+        if(options.primarySplit){
+          const codeMatch = className.match(/^(\d{1,2})\s*([A-Za-z]+)$/);
+          if(codeMatch){
+            const yearNum = parseInt(codeMatch[1],10);
+            const letters = codeMatch[2].split('');
+            if(yearNum>=1 && yearNum<=6 && letters.length===teacherList.length){
+              teacherList.forEach((teacher,i)=>{
+                rows.push({day: dayIdx, start, end, className: yearNum+letters[i], teacher});
+              });
+              return;
+            }
           }
         }
-        // Secondary (Year 7–11) or letter/teacher count mismatch:
-        // gender-split groups sharing the same time slot.
-        const boysCount = Math.ceil(teacherList.length/2);
-        const girlsCount = teacherList.length - boysCount;
-        teacherList.forEach((teacher,i)=>{
-          let groupName;
-          if(i<boysCount){
-            groupName = className + (boysCount>1 ? ` boys${i+1}` : ' boys');
-          } else {
-            const gi = i-boysCount+1;
-            groupName = className + (girlsCount>1 ? ` girls${gi}` : ' girls');
-          }
-          rows.push({day: dayIdx, start, end, className: groupName, teacher});
-        });
+        // Secondary (Year 7–11): gender-split groups sharing the same time slot.
+        if(options.secondarySplit){
+          const boysCount = Math.ceil(teacherList.length/2);
+          const girlsCount = teacherList.length - boysCount;
+          teacherList.forEach((teacher,i)=>{
+            let groupName;
+            if(i<boysCount){
+              groupName = className + (boysCount>1 ? ` boys${i+1}` : ' boys');
+            } else {
+              const gi = i-boysCount+1;
+              groupName = className + (girlsCount>1 ? ` girls${gi}` : ' girls');
+            }
+            rows.push({day: dayIdx, start, end, className: groupName, teacher});
+          });
+          return;
+        }
+        // Neither rule applies / both off: keep as one combined class with all teachers listed.
+        rows.push({day: dayIdx, start, end, className, teacher: teacherList.join(', ')});
       }
     });
   }
