@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v19-toggleable-import-rules -->
+<!-- BUILD: v20-distinct-class-split -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
@@ -572,7 +572,7 @@ function renderDashboard(){
    IMPORT FROM EXCEL
    --------------------------------------------------------- */
 let IMPORT = { workbook:null, sheetName:null, rows:[], uniqueClasses:[], parseInfo:null,
-  options: { primarySplit:true, secondarySplit:true } };
+  options: { primarySplit:true, secondarySplit:true, distinctSplit:true } };
 
 function renderImport(){
   const m = document.getElementById('main');
@@ -587,6 +587,11 @@ function renderImport(){
   const optionsPanel = el(`<div class="panel"><h3>Splitting rules</h3>
     <p class="hint">These control how a cell with more than one teacher name gets split into separate classes. Turn off whichever doesn't match how your school's timetable works — cells that would have split just import as one combined class with all teachers listed instead.</p>
     <div style="margin-top:10px;">
+      <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;cursor:pointer;">
+        <input type="checkbox" id="optDistinctSplit" ${IMPORT.options.distinctSplit?'checked':''} onchange="toggleImportOption('distinctSplit', this.checked)" style="margin-top:3px;">
+        <span><b>Primary (Year 1–6): split combined codes like "2C/2S" or "3C/4H".</b><br>
+        <span class="hint">When a cell already shows separate class codes joined by / or +, each with its own teacher, they're kept as the literal classes shown — not treated as a gender split of one class. Checked first, before the two rules below.</span></span>
+      </label>
       <label style="display:flex;gap:10px;align-items:flex-start;margin-bottom:12px;cursor:pointer;">
         <input type="checkbox" id="optPrimarySplit" ${IMPORT.options.primarySplit?'checked':''} onchange="toggleImportOption('primarySplit', this.checked)" style="margin-top:3px;">
         <span><b>Primary (Year 1–6): one letter per teacher.</b><br>
@@ -812,6 +817,26 @@ function parseTimetableSheet(sheet, options){
         if(teacherList.length<=1){
           rows.push({day: dayIdx, start, end, className, teacher: teacherList[0]||''});
           return;
+        }
+        // Primary (Year 1–6): a cell already showing separate class codes
+        // joined by / or + (e.g. "2C/2S", "3C/4H") — each piece is its own
+        // real class, matched in order to its own teacher. Checked first,
+        // since this looks similar to the letter-pairing case below but
+        // means something different.
+        if(options.distinctSplit && /[\/+]/.test(className)){
+          const pieces = className.split(/[\/+]/).map(p=>p.trim()).filter(Boolean);
+          if(pieces.length>=2 && pieces.length===teacherList.length){
+            const allValid = pieces.every(p=>{
+              const pm = p.match(/^(\d{1,2})\s*[A-Za-z]+$/);
+              return pm && parseInt(pm[1],10)>=1 && parseInt(pm[1],10)<=6;
+            });
+            if(allValid){
+              teacherList.forEach((teacher,i)=>{
+                rows.push({day: dayIdx, start, end, className: pieces[i], teacher});
+              });
+              return;
+            }
+          }
         }
         // Primary (Year 1–6): a code like "5CHJ" is a year number followed
         // by one letter per class. When the letter count matches the
