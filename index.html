@@ -3,12 +3,13 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<!-- BUILD: v45-real-pdf-download -->
+<!-- BUILD: v46-academic-calendar-pdf-import -->
 <title>PE Programme Planner</title>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js"></script>
 <style>
 :root{
   --ink:#1c2321;
@@ -1546,11 +1547,199 @@ async function addFacility(){
 }
 
 /* ---------------------------------------------------------
+   ACADEMIC CALENDAR IMPORT (PDF)
+   --------------------------------------------------------- */
+let CALIMPORT = { holidays:[], terms:[], filename:null, error:null };
+
+const CAL_MONTHS = {jan:1,feb:2,mar:3,apr:4,may:5,jun:6,jul:7,aug:8,sep:9,oct:10,nov:11,dec:12};
+function calMonthNum(name){ return CAL_MONTHS[(name||'').toLowerCase().slice(0,3)] || null; }
+function calIso(y,m,d){ return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}`; }
+
+/* Pulls dated public holidays and term start dates out of the plain text
+   of an academic calendar PDF. Kept as a pure function so it can be tested
+   against real calendar text without a browser. */
+function parseAcademicCalendarText(text){
+  const holidays = [];
+  const holRe = /(\d{1,2})\s+([A-Za-z]{3,9})\.?\s+(\d{4})\s*[-–]\s*(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)\b\s*([^\n]*)/gi;
+  let m;
+  while((m = holRe.exec(text)) !== null){
+    const mo = calMonthNum(m[2]);
+    if(!mo) continue;
+    const day = parseInt(m[1],10);
+    if(day<1 || day>31) continue;
+    holidays.push({date: calIso(m[3],mo,day), label: (m[4]||'').trim()});
+  }
+
+  const terms = [];
+  const termRe = /Term\s+(\d+)\s+(\d+)\s+(?:Mon|Tue|Tues|Wed|Thu|Thur|Thurs|Fri|Sat|Sun)\s+(\d{1,2})\s+([A-Za-z]{3,9})\s+(\d{4})/gi;
+  while((m = termRe.exec(text)) !== null){
+    const mo = calMonthNum(m[4]);
+    if(!mo) continue;
+    terms.push({name: 'Term '+m[1], days: parseInt(m[2],10), start: calIso(m[5],mo,m[3])});
+  }
+  // a term's end isn't printed on these calendars; infer it as the day
+  // before the next term starts so the user has a sensible starting point
+  terms.forEach((t,i)=>{
+    if(i < terms.length-1){
+      const next = new Date(terms[i+1].start+'T00:00:00');
+      next.setDate(next.getDate()-1);
+      t.end = next.toISOString().slice(0,10);
+      t.endInferred = true;
+    } else {
+      t.end = '';
+      t.endInferred = false;
+    }
+  });
+
+  // de-duplicate holidays landing on the same date
+  const seen = new Set();
+  const uniqueHolidays = holidays.filter(h=>{
+    if(seen.has(h.date)) return false;
+    seen.add(h.date); return true;
+  });
+
+  return {holidays: uniqueHolidays, terms};
+}
+
+async function handleCalendarFile(input){
+  const file = input.files[0];
+  if(!file) return;
+  CALIMPORT = { holidays:[], terms:[], filename:file.name, error:null };
+  showLoading('Reading '+file.name+'…');
+  try{
+    if(!/\.pdf$/i.test(file.name)){
+      CALIMPORT.error = 'Only PDF files can be read automatically. Images and scans would need OCR, which this tool does not do — for those, add the dates by hand below.';
+    } else {
+      const buf = await file.arrayBuffer();
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js';
+      const pdf = await pdfjsLib.getDocument({data: buf}).promise;
+      let text = '';
+      for(let p=1; p<=pdf.numPages; p++){
+        const page = await pdf.getPage(p);
+        const content = await page.getTextContent();
+        // join with newlines between reasonably separated items so the
+        // row-based regexes have line boundaries to work with
+        text += content.items.map(i=>i.str).join(' ') + '\n';
+      }
+      const parsed = parseAcademicCalendarText(text);
+      CALIMPORT.holidays = parsed.holidays;
+      CALIMPORT.terms = parsed.terms;
+      if(parsed.holidays.length===0 && parsed.terms.length===0){
+        CALIMPORT.error = 'No dates could be read from this PDF. It may be a scan (an image rather than real text), or use a layout this tool does not recognise.';
+      }
+    }
+  }catch(err){
+    console.error('handleCalendarFile failed:', err);
+    CALIMPORT.error = err.message;
+  }
+  hideLoading();
+  render();
+}
+
+async function commitCalendarImport(){
+  const holidayRows = CALIMPORT.holidays.map((h,i)=>({
+    h, include: document.getElementById('calhol_'+i)?.checked,
+    periodId: document.getElementById('calholper_'+i)?.value || null
+  })).filter(r=>r.include);
+
+  const termRows = CALIMPORT.terms.map((t,i)=>({
+    t, include: document.getElementById('calterm_'+i)?.checked,
+    start: document.getElementById('caltermstart_'+i)?.value,
+    end: document.getElementById('caltermend_'+i)?.value
+  })).filter(r=>r.include);
+
+  const badTerm = termRows.find(r=>!r.start || !r.end || r.start > r.end);
+  if(badTerm){ alert(`"${badTerm.t.name}" needs a valid start and end date (end must be after start).`); return; }
+
+  showLoading('Adding dates…');
+  let addedTerms = 0, addedHolidays = 0, skipped = 0;
+
+  for(const r of termRows){
+    const exists = STATE.periods.some(p=>p.name.toLowerCase()===r.t.name.toLowerCase());
+    if(exists){ skipped++; continue; }
+    if(!await dbWrite(sb.from('periods').insert({school_id: STATE.currentSchoolId, name: r.t.name, start_date: r.start, end_date: r.end}), 'add period from calendar')){ hideLoading(); return; }
+    addedTerms++;
+  }
+  if(addedTerms) await loadAll(); // so holidays can reference newly created periods
+
+  for(const r of holidayRows){
+    const exists = STATE.unavailable.some(u=>u.date===r.h.date);
+    if(exists){ skipped++; continue; }
+    if(!await dbWrite(sb.from('unavailable_dates').insert({school_id: STATE.currentSchoolId, date: r.h.date, label: r.h.label, period_id: r.periodId || null}), 'add unavailable date from calendar')){ hideLoading(); return; }
+    addedHolidays++;
+  }
+
+  await loadAll();
+  CALIMPORT = { holidays:[], terms:[], filename:null, error:null };
+  render();
+  hideLoading();
+  alert(`Calendar import complete.\n${addedTerms} term(s) added.\n${addedHolidays} unavailable date(s) added.\n${skipped} skipped (already existed).`);
+}
+
+/* ---------------------------------------------------------
    PERIODS & UNAVAILABLE DATES
    --------------------------------------------------------- */
 function renderPeriods(){
   const m = document.getElementById('main');
   m.appendChild(el(head('04 · Calendar','Periods &amp; unavailable dates','Define your terms and every date PE cannot run — holidays, national days, events, anything else.')));
+
+  // --- import from an academic calendar PDF ---
+  const impPanel = el(`<div class="panel"><h3>Import from academic calendar (PDF)</h3>
+    <input type="file" id="calendarFile" accept=".pdf" onchange="handleCalendarFile(this)">
+    <p class="hint">Upload your school's academic calendar PDF and it will read the listed public holidays and term start dates. Nothing is saved until you review and confirm below.<br>
+    <b>Note:</b> only dates written as text can be read. Colour-coded blocks in a calendar grid (school holidays shaded green, etc.) aren't readable — add those by hand. Photos and scans can't be read either, since they're images rather than text.</p>
+  </div>`);
+  m.appendChild(impPanel);
+
+  if(CALIMPORT.error){
+    m.appendChild(el(`<div class="conflict-box"><b>Could not read that file</b>${esc(CALIMPORT.error)}</div>`));
+  }
+
+  if(CALIMPORT.terms.length || CALIMPORT.holidays.length){
+    const perOpts = STATE.periods.map(p=>`<option value="${p.id}">${esc(p.name)}</option>`).join('');
+    const revPanel = el(`<div class="panel"><h3>Review what was found in ${esc(CALIMPORT.filename||'the file')}</h3>
+      <div id="calTermsBox"></div>
+      <div id="calHolsBox" style="margin-top:18px;"></div>
+      <button class="btn" style="margin-top:16px;" onclick="commitCalendarImport()">Add the ticked dates</button>
+    </div>`);
+    m.appendChild(revPanel);
+
+    const termsBox = revPanel.querySelector('#calTermsBox');
+    if(CALIMPORT.terms.length){
+      const t = el(`<table><thead><tr><th></th><th>Term</th><th>Start</th><th>End</th></tr></thead><tbody></tbody></table>`);
+      const tb = t.querySelector('tbody');
+      CALIMPORT.terms.forEach((term,i)=>{
+        const dup = STATE.periods.some(p=>p.name.toLowerCase()===term.name.toLowerCase());
+        tb.appendChild(el(`<tr>
+          <td><input type="checkbox" id="calterm_${i}" ${dup?'':'checked'}></td>
+          <td><b>${esc(term.name)}</b> ${dup?'<span class="tag clay">already exists</span>':''}<br><span class="hint">${term.days} school days</span></td>
+          <td><input type="date" id="caltermstart_${i}" value="${term.start}"></td>
+          <td><input type="date" id="caltermend_${i}" value="${term.end||''}">
+            ${term.endInferred?'<br><span class="hint">inferred as the day before the next term — check this</span>':'<br><span class="hint">not in the PDF — please set it</span>'}</td>
+        </tr>`));
+      });
+      termsBox.appendChild(el(`<h3 style="margin-bottom:8px;">Terms found (${CALIMPORT.terms.length})</h3>`));
+      termsBox.appendChild(t);
+      termsBox.appendChild(el(`<p class="hint">These calendars print term <i>start</i> dates only, so end dates are worked out from the next term's start. Adjust any that aren't right before adding.</p>`));
+    }
+
+    const holsBox = revPanel.querySelector('#calHolsBox');
+    if(CALIMPORT.holidays.length){
+      const t = el(`<table><thead><tr><th></th><th>Date</th><th>Label</th><th>Apply to term</th></tr></thead><tbody></tbody></table>`);
+      const tb = t.querySelector('tbody');
+      CALIMPORT.holidays.forEach((h,i)=>{
+        const dup = STATE.unavailable.some(u=>u.date===h.date);
+        tb.appendChild(el(`<tr>
+          <td><input type="checkbox" id="calhol_${i}" ${dup?'':'checked'}></td>
+          <td class="mono">${h.date}</td>
+          <td>${esc(h.label)} ${dup?'<span class="tag clay">already added</span>':''}</td>
+          <td><select id="calholper_${i}"><option value="">— any —</option>${perOpts}</select></td>
+        </tr>`));
+      });
+      holsBox.appendChild(el(`<h3 style="margin-bottom:8px;">Public holidays found (${CALIMPORT.holidays.length})</h3>`));
+      holsBox.appendChild(t);
+    }
+  }
 
   const panel = el(`<div class="panel"><h3>Add a period / term</h3>
     <div class="row">
